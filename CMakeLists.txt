@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(AuditStrategyTemplate VERSION 1.0 LANGUAGES CXX)
+project(DHTDynamicAuditStrategy VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,12 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(CheckCXXSourceCompiles)
 
 # ==================== Options ====================
-option(CAM_BUILD_BENCHMARK "Build benchmarks" OFF)
+option(CAM_STANDALONE "Build as standalone project (on) or as part of ChordAuditMatrix (off)" ON)
 option(CAM_BUILD_TESTS "Build tests" OFF)
 option(CAM_GENERATE_DOCS "Generate Doxygen documentation" OFF)
 
 # ==================== CoreLib Dependency ====================
-add_subdirectory(3rdparty/CoreLib EXCLUDE_FROM_ALL)
+if(CAM_STANDALONE)
+    add_subdirectory(3rdparty/CoreLib EXCLUDE_FROM_ALL)
+endif()
 
 # ==================== Sanitizer ====================
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -44,7 +46,19 @@ endif()
 
 # ==================== Strategy Shared Library ====================
 set(SOURCE
-  source/new_audit_strategy.cpp
+  source/strategy.cpp
+  source/artifact_factory.cpp
+  source/common.cpp
+  source/params.cpp
+  source/challenges.cpp
+  source/generate_challenges.cpp
+  source/generate_keys.cpp
+  source/generate_proofs.cpp
+  source/generate_tags.cpp
+  source/initialize_algorithm.cpp
+  source/maintain.cpp
+  source/proves.cpp
+  source/tags.cpp
 )
 
 add_library(${PROJECT_NAME} SHARED ${SOURCE})
@@ -55,6 +69,17 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     SOVERSION ${PROJECT_VERSION_MAJOR}
 )
+
+# ── Plugin output settings (when built as submodule) ──
+if(NOT CAM_STANDALONE)
+    if(COMMAND cam_add_plugin)
+        # cam_add_plugin already sets LIBRARY_OUTPUT_DIRECTORY, PREFIX, INSTALL_RPATH, etc.
+    else()
+        # Manual fallback when CAMDeploy.cmake is not included
+        set_target_properties(${PROJECT_NAME} PROPERTIES
+            PREFIX "")
+    endif()
+endif()
 
 # ==================== Doxygen ====================
 if(CAM_GENERATE_DOCS)

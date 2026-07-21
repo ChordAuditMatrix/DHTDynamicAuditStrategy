@@ -333,13 +333,20 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
 
 } // namespace CAMatrix::Audit::Strategies
 
-// ── C-linkage factory functions for dynamic library loading ──
-extern "C" {
-CAMatrix::Audit::Core::AuditStrategy* create_audit_strategy() noexcept {
+// ── C-linkage factory functions for dynamic loading ──
+// Defined inside namespace CAMatrix::Audit::Core to match the friend
+// declarations in strategy.h (so destroy can access the protected destructor).
+// extern "C" linkage keeps the exported symbol names compatible with
+// dlsym/GetProcAddress.
+namespace CAMatrix::Audit::Core {
+extern "C" AuditStrategy* create_audit_strategy() noexcept
+{
     try { return new CAMatrix::Audit::Strategies::DHTDynamicAuditStrategy(); }
     catch (...) { return nullptr; }
 }
-void destroy_audit_strategy(CAMatrix::Audit::Core::AuditStrategy* p) noexcept {
+
+extern "C" void destroy_audit_strategy(AuditStrategy* p) noexcept
+{
     delete p;
 }
-}
+} // namespace CAMatrix::Audit::Core

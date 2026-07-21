@@ -1,8 +1,8 @@
 name: CI
 
-# CI pipeline for ChordAuditMatrix AuditStrategyTemplate.
+# CI pipeline for ChordAuditMatrix DHTDynamicAuditStrategy.
 #
-# Builds the AuditStrategyTemplate shared library on Linux, macOS, and
+# Builds the DHTDynamicAuditStrategy shared library on Linux, macOS, and
 # Windows. On tag pushes matching v*, the platform-specific shared
 # libraries are packaged and uploaded to a GitHub Release.
 #
@@ -137,7 +137,6 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCAM_BUILD_TESTS=OFF \
-            -DCAM_BUILD_BENCHMARK=OFF \
             -DCAM_GENERATE_DOCS=OFF \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
@@ -152,13 +151,12 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_BUILD_TYPE=Release `
             -DCAM_BUILD_TESTS=OFF `
-            -DCAM_BUILD_BENCHMARK=OFF `
             -DCAM_GENERATE_DOCS=OFF
 
       - name: Build shared library
         shell: bash
         run: |
-          cmake --build build --parallel --target AuditStrategyTemplate
+          cmake --build build --parallel --target DHTDynamicAuditStrategy
 
       # ----------------------------------------------------------------------
       # Package the shared library (only on tag pushes)
@@ -168,9 +166,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          STAGING="AuditStrategyTemplate-${GITHUB_REF_NAME}-linux-x64"
+          STAGING="DHTDynamicAuditStrategy-${GITHUB_REF_NAME}-linux-x64"
           mkdir -p "${STAGING}/lib"
-          find build -maxdepth 2 -type f -name 'libAuditStrategyTemplate.so*' \
+          find build -maxdepth 2 -type f -name 'libDHTDynamicAuditStrategy.so*' \
             -exec cp -P {} "${STAGING}/lib/" \;
           cp README.md LICENSE "${STAGING}/" 2>/dev/null || true
           zip -r "${STAGING}.zip" "${STAGING}"
@@ -181,9 +179,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          STAGING="AuditStrategyTemplate-${GITHUB_REF_NAME}-macos-x64"
+          STAGING="DHTDynamicAuditStrategy-${GITHUB_REF_NAME}-macos-x64"
           mkdir -p "${STAGING}/lib"
-          find build -maxdepth 2 -type f -name 'libAuditStrategyTemplate*.dylib' \
+          find build -maxdepth 2 -type f -name 'libDHTDynamicAuditStrategy*.dylib' \
             -exec cp -P {} "${STAGING}/lib/" \;
           cp README.md LICENSE "${STAGING}/" 2>/dev/null || true
           zip -r "${STAGING}.zip" "${STAGING}"
@@ -194,11 +192,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $staging = "AuditStrategyTemplate-${env:GITHUB_REF_NAME}-windows-x64"
+          $staging = "DHTDynamicAuditStrategy-${env:GITHUB_REF_NAME}-windows-x64"
           New-Item -ItemType Directory -Force -Path "$staging\bin","$staging\lib" | Out-Null
-          Get-ChildItem -Path build -Recurse -Filter 'AuditStrategyTemplate.dll' |
+          Get-ChildItem -Path build -Recurse -Filter 'DHTDynamicAuditStrategy.dll' |
             Copy-Item -Destination "$staging\bin\" -ErrorAction SilentlyContinue
-          Get-ChildItem -Path build -Recurse -Filter 'AuditStrategyTemplate.lib' |
+          Get-ChildItem -Path build -Recurse -Filter 'DHTDynamicAuditStrategy.lib' |
             Copy-Item -Destination "$staging\lib\" -ErrorAction SilentlyContinue
           foreach ($f in @('README.md','LICENSE')) {
             if (Test-Path $f) { Copy-Item $f -Destination "$staging\" }
@@ -210,7 +208,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
-          name: AuditStrategyTemplate-${{ runner.os }}-${{ github.ref_name }}
+          name: DHTDynamicAuditStrategy-${{ runner.os }}-${{ github.ref_name }}
           path: ${{ env.PACKAGE_PATH }}
           if-no-files-found: error
           retention-days: 7

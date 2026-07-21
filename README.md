@@ -59,9 +59,9 @@ The DHT strategy requires a state store for tracking block versions. The followi
 
 ## Configuration
 
-Add to your server config (e.g., `config/audit.jsonc`):
+Add to your server config (e.g., `config/audit.json`):
 
-```jsonc
+```json
 {
   "custom_config": {
     "strategyDir": "plugins/strategies"

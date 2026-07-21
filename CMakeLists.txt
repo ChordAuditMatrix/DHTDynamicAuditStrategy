@@ -61,24 +61,17 @@ set(SOURCE
   source/tags.cpp
 )
 
-add_library(${PROJECT_NAME} SHARED ${SOURCE})
-target_link_libraries(${PROJECT_NAME} PRIVATE ChordAuditMatrixLib)
-target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-set_target_properties(${PROJECT_NAME} PROPERTIES
-    VERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
-    SOVERSION ${PROJECT_VERSION_MAJOR}
-)
-
-# ── Plugin output settings (when built as submodule) ──
-if(NOT CAM_STANDALONE)
-    if(COMMAND cam_add_plugin)
-        # cam_add_plugin already sets LIBRARY_OUTPUT_DIRECTORY, PREFIX, INSTALL_RPATH, etc.
-    else()
-        # Manual fallback when CAMDeploy.cmake is not included
-        set_target_properties(${PROJECT_NAME} PROPERTIES
-            PREFIX "")
-    endif()
+if(NOT CAM_STANDALONE AND COMMAND cam_add_plugin)
+    # In-tree: use the main project's plugin helper (sets output dir, RPATH, etc.)
+    cam_add_plugin(${PROJECT_NAME} SOURCES ${SOURCE} PLUGIN_SUBDIR strategies)
+else()
+    add_library(${PROJECT_NAME} SHARED ${SOURCE})
+    target_link_libraries(${PROJECT_NAME} PRIVATE ChordAuditMatrixLib)
+    target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        VERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+        SOVERSION ${PROJECT_VERSION_MAJOR}
+        PREFIX "")
 endif()
 
 # ==================== Doxygen ====================

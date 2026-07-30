@@ -62,7 +62,7 @@
 
 #include "DHTDynamicAuditStrategy/strategy.h"
 #include "DHTDynamicAuditStrategy/maintain_types.h"
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/versioned_block_metadata.h"
+#include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 #include "ChordAuditMatrixLib/implementations/audit/state_stores/dynamic_pdp_state_store.h"
 #include "DHTDynamicAuditStrategy/common.h"
 #include "ChordAuditMatrixLib/interfaces/audit/dynamic_strategy.h"

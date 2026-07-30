@@ -54,7 +54,7 @@
 #include "DHTDynamicAuditStrategy/params.h"
 #include "DHTDynamicAuditStrategy/common.h"
 #include "DHTDynamicAuditStrategy/tags.h"
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/versioned_block_metadata.h"
+#include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 #include "ChordAuditMatrixLib/implementations/audit/state_stores/dynamic_pdp_state_store.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/in_memory_tags.h"
 #include "ChordAuditMatrixLib/interfaces/audit/dynamic_strategy.h"

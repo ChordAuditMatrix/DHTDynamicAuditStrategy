@@ -40,7 +40,7 @@
 #ifndef CAMATRIX_DHT_DYNAMIC_CHALLENGES_H
 #define CAMATRIX_DHT_DYNAMIC_CHALLENGES_H
 
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/versioned_block_metadata.h"
+#include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 #include "ChordAuditMatrixLib/implementations/crypto/sm9_bls/data.h"
 #include "ChordAuditMatrixLib/implementations/crypto/sm9_bls/points.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/challenges.h"

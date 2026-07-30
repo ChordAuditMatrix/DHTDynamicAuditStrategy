@@ -57,6 +57,7 @@
 #define CAMATRIX_DHT_DYNAMIC_AUDIT_STRATEGY_H
 
 #include "ChordAuditMatrixLib/interfaces/audit/dynamic_strategy.h"
+#include "DHTDynamicAuditStrategy/state_stores/dynamic_hash_table_state_store.h"
 #include <memory>
 
 namespace CAMatrix::Audit::Strategies::DHTDynamic {
@@ -110,6 +111,21 @@ public:
      */
     CAMatrix::Audit::Core::StateMaintenanceParty stateMaintenanceParty() const override {
         return ::CAMatrix::Audit::Core::StateMaintenanceParty::TPA;
+    }
+
+    // ── State store creation ──
+
+    /**
+     * @brief Create a DynamicHashTableStateStore for this strategy
+     * @param metadataFactory [IN] Factory for creating BlockMetadata instances
+     * @return shared_ptr<DynamicPdpStateStore>, New DynamicHashTableStateStore
+     * @details Returns the DHTDynamic-owned DynamicHashTableStateStore so that
+     *          the strategy uses its own state store implementation rather than
+     *          the CoreLib default.
+     */
+    std::shared_ptr<::CAMatrix::Audit::Core::DynamicPdpStateStore>
+        createStateStore(::CAMatrix::Audit::Core::BlockMetadataFactory metadataFactory) const override {
+        return std::make_shared<::CAMatrix::Audit::Core::DynamicHashTableStateStore>(std::move(metadataFactory));
     }
 
     // ── Algorithm injection ──

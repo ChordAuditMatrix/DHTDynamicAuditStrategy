@@ -50,7 +50,7 @@
 
 #include "DHTDynamicAuditStrategy/strategy.h"
 #include "DHTDynamicAuditStrategy/common.h"
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/versioned_block_metadata.h"
+#include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 
 #include <spdlog/spdlog.h>
 

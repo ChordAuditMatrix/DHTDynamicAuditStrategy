@@ -59,6 +59,8 @@ set(SOURCE
   source/maintain.cpp
   source/proves.cpp
   source/tags.cpp
+  source/state_stores/dynamic_hash_table_state_store.cpp
+  source/state_stores/versioned_block_metadata.cpp
 )
 
 if(NOT CAM_STANDALONE AND COMMAND cam_add_plugin)

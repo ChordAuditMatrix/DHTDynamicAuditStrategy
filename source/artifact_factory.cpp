@@ -37,7 +37,7 @@
 
 #include "DHTDynamicAuditStrategy/artifact_factory.h"
 
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/versioned_block_metadata.h"
+#include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 #include "DHTDynamicAuditStrategy/challenges.h"
 #include "DHTDynamicAuditStrategy/params.h"
 #include "DHTDynamicAuditStrategy/proves.h"

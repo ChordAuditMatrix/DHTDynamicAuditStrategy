@@ -44,7 +44,7 @@
 #include <utility>
 #include <vector>
 
-namespace CAMatrix::Audit::Core {
+namespace CAMatrix::Audit::Strategies::DHTDynamic {
 
 // ── File-level operations ──
 
@@ -303,4 +303,4 @@ void DynamicHashTableStateStore::setBlockMetadataCollection(
     it->second = std::move(collection);
 }
 
-} // namespace CAMatrix::Audit::Core
+} // namespace CAMatrix::Audit::Strategies::DHTDynamic

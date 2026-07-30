@@ -127,11 +127,11 @@ DHTDynamicAuditStrategy::generateTags(
     // ── Generate tags for each target block index ──
     for (const auto blockIndex : targetIndices) {
         // Read per-block metadata from stateStore; fall back to defaults if not available
-        CAMatrix::Audit::Core::VersionedBlockMetadata metadata;
+        CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata metadata;
         if (stateStore_) {
             try {
                 auto meta = stateStore_->getBlockMetadata(ext->fileId, blockIndex);
-                auto dynMeta = std::dynamic_pointer_cast<CAMatrix::Audit::Core::VersionedBlockMetadata>(meta);
+                auto dynMeta = std::dynamic_pointer_cast<CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(meta);
                 if (dynMeta) {
                     metadata = *dynMeta;
                 }

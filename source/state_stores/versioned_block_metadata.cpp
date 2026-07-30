@@ -31,7 +31,7 @@
 
 #include <cereal/archives/binary.hpp>
 
-namespace CAMatrix::Audit::Core {
+namespace CAMatrix::Audit::Strategies::DHTDynamic {
 
 void VersionedBlockMetadata::do_serialize(cereal::BinaryOutputArchive& ar) const
 {
@@ -45,4 +45,4 @@ void VersionedBlockMetadata::do_deserialize(cereal::BinaryInputArchive& ar)
     CEREAL_NVP_SERIALIZE(ar, "timestamp", timestamp);
 }
 
-} // namespace CAMatrix::Audit::Core
+} // namespace CAMatrix::Audit::Strategies::DHTDynamic

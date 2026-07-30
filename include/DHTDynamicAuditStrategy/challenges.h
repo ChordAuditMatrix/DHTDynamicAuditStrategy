@@ -69,7 +69,7 @@ public:
         /** @brief Random coefficient ν_j */
         ::CAMatrix::Crypto::SM9BLS::SM9CryptoData nu{};
         /** @brief Block metadata at the time of challenge */
-        ::CAMatrix::Audit::Core::VersionedBlockMetadata metadata{};
+        ::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata metadata{};
     };
 
     DHTDynamicChallenges() = default;

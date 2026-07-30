@@ -43,7 +43,9 @@
 #include <cstdint>
 #include <memory>
 
-namespace CAMatrix::Audit::Core {
+namespace CAMatrix::Audit::Strategies::DHTDynamic {
+using CAMatrix::Audit::Core::BlockMetadata;
+
 
 /**
  * @class VersionedBlockMetadata
@@ -116,6 +118,6 @@ public:
     std::uint64_t timestamp = 0;  ///< Last modification timestamp (epoch seconds)
 };
 
-} // namespace CAMatrix::Audit::Core
+} // namespace CAMatrix::Audit::Strategies::DHTDynamic
 
 #endif // DHTDYNAMIC_VERSIONED_BLOCK_METADATA_H

@@ -98,7 +98,7 @@ using SM9GTElementPtr = ::CAMatrix::Crypto::SM9BLS::SM9GTElementPtr;
  * @return G1Point, H = hashToCurve(fileId‖i‖metadata.serialize())
  */
 G1Point computeBlockHash(const std::string& fileId, std::size_t blockIndex,
-                          const ::CAMatrix::Audit::Core::VersionedBlockMetadata& metadata);
+                          const ::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata& metadata);
 
 /**
  * @brief Segment size for block encoding (sizeof(sm9_z256_t) = 32 bytes)

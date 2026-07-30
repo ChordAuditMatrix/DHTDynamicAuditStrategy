@@ -200,7 +200,7 @@ DHTDynamicAuditStrategy::generateChallenges(
     for (auto& item : items) {
         auto metadata = stateStore_->getBlockMetadata(ext->fileId, item.blockIndex);
         // DynamicPdpStateStore returns shared_ptr<BlockMetadata> — cast to concrete type
-        auto dynMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Core::VersionedBlockMetadata>(metadata);
+        auto dynMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(metadata);
         if (dynMeta) {
             item.metadata = *dynMeta;
         }

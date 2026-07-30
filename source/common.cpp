@@ -41,7 +41,7 @@ namespace DHTDynamic {
 // ─────────────────────────────────────────────────────────────────────────────
 
 G1Point computeBlockHash(const std::string& fileId, std::size_t blockIndex,
-                          const ::CAMatrix::Audit::Core::VersionedBlockMetadata& metadata)
+                          const ::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata& metadata)
 {
     // Build input: fileId || blockIndex (big-endian 8 bytes) || metadata.serialize()
     // The fileId and blockIndex ensure uniqueness across files and blocks.

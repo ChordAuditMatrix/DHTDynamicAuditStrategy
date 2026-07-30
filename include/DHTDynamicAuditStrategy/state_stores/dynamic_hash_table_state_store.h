@@ -53,7 +53,12 @@
 #include <unordered_map>
 #include <vector>
 
-namespace CAMatrix::Audit::Core {
+namespace CAMatrix::Audit::Strategies::DHTDynamic {
+using CAMatrix::Audit::Core::DynamicPdpStateStore;
+using CAMatrix::Audit::Core::BlockMetadata;
+using CAMatrix::Audit::Core::BlockMetadataCollectionPtr;
+using CAMatrix::Audit::Core::InMemoryBlockMetadataCollection;
+
 
 /**
  * @class DynamicHashTableStateStore
@@ -195,6 +200,6 @@ private:
     InMemoryBlockMetadataCollection::BlockMetadataFactory metadataFactory_;
 };
 
-} // namespace CAMatrix::Audit::Core
+} // namespace CAMatrix::Audit::Strategies::DHTDynamic
 
 #endif // DHTDYNAMIC_DYNAMIC_HASH_TABLE_STATE_STORE_H

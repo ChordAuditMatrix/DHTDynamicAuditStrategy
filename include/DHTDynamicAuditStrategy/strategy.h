@@ -125,7 +125,7 @@ public:
      */
     std::shared_ptr<::CAMatrix::Audit::Core::DynamicPdpStateStore>
         createStateStore(::CAMatrix::Audit::Core::BlockMetadataFactory metadataFactory) const override {
-        return std::make_shared<::CAMatrix::Audit::Core::DynamicHashTableStateStore>(std::move(metadataFactory));
+        return std::make_shared<::CAMatrix::Audit::Strategies::DHTDynamic::DynamicHashTableStateStore>(std::move(metadataFactory));
     }
 
     // ── Algorithm injection ──

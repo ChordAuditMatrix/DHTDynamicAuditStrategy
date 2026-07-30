@@ -145,7 +145,7 @@ DHTDynamicAuditStrategy::handleUpdate(
     for (const auto blockIndex : ext->blockIndices) {
         // Validate block exists in stateStore
         auto existingMeta = stateStore_->getBlockMetadata(ext->fileId, blockIndex);
-        auto existingDhtMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Core::VersionedBlockMetadata>(existingMeta);
+        auto existingDhtMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(existingMeta);
         if (!existingDhtMeta) {
             throw std::runtime_error(
                 "DHTDynamic Update: block " + std::to_string(blockIndex) +

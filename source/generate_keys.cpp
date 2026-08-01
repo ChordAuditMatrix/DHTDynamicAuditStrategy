@@ -64,8 +64,6 @@
 #include "ChordAuditMatrixLib/implementations/crypto/sm9_bls/data.h"
 #include "ChordAuditMatrixLib/implementations/crypto/sm9_bls/points.h"
 
-#include "gmssl/sm9_z256.h"
-
 #include <cstring>
 
 namespace CAMatrix::Audit::Strategies {
@@ -123,23 +121,27 @@ DHTDynamicAuditStrategy::generateKeys(
 
     // Step 1: Generate random BLS signing scalar a ∈ Z_q*
     ::CAMatrix::Crypto::SM9BLS::SM9CryptoData a;
-    sm9_z256_t ra;
-    if (sm9_z256_rand_range(ra, sm9_z256_order()) != 1) {
-        result.ok = false;
-        result.reason = "DHTDynamic: random scalar a generation failed";
-        return result;
-    }
-    std::memcpy(a.data(), ra, a.size());
+    do {
+        auto randomBytes = algorithm_->generateRandom(a.size());
+        if (randomBytes.size() != a.size()) {
+            result.ok = false;
+            result.reason = "DHTDynamic: random scalar a generation failed";
+            return result;
+        }
+        std::memcpy(a.data(), randomBytes.data(), a.size());
+    } while (a.isZero());
 
     // Step 2: Generate random G₂ generator: g = [r] · P₂
     ::CAMatrix::Crypto::SM9BLS::SM9CryptoData r;
-    sm9_z256_t rr;
-    if (sm9_z256_rand_range(rr, sm9_z256_order()) != 1) {
-        result.ok = false;
-        result.reason = "DHTDynamic: random r generation failed";
-        return result;
-    }
-    std::memcpy(r.data(), rr, r.size());
+    do {
+        auto randomBytes = algorithm_->generateRandom(r.size());
+        if (randomBytes.size() != r.size()) {
+            result.ok = false;
+            result.reason = "DHTDynamic: random r generation failed";
+            return result;
+        }
+        std::memcpy(r.data(), randomBytes.data(), r.size());
+    } while (r.isZero());
     auto g = ::CAMatrix::Crypto::SM9BLS::G2Point::fromScalar(r);
 
     // Step 3: Compute y = [a] · g (BLS public key with random generator)
@@ -148,13 +150,15 @@ DHTDynamicAuditStrategy::generateKeys(
 
     // Step 4: Generate proof binding point: u = [r'] · P₁
     ::CAMatrix::Crypto::SM9BLS::SM9CryptoData rPrime;
-    sm9_z256_t rrPrime;
-    if (sm9_z256_rand_range(rrPrime, sm9_z256_order()) != 1) {
-        result.ok = false;
-        result.reason = "DHTDynamic: random r' generation failed";
-        return result;
-    }
-    std::memcpy(rPrime.data(), rrPrime, rPrime.size());
+    do {
+        auto randomBytes = algorithm_->generateRandom(rPrime.size());
+        if (randomBytes.size() != rPrime.size()) {
+            result.ok = false;
+            result.reason = "DHTDynamic: random r' generation failed";
+            return result;
+        }
+        std::memcpy(rPrime.data(), randomBytes.data(), rPrime.size());
+    } while (rPrime.isZero());
     auto uPtr = std::static_pointer_cast<::CAMatrix::Crypto::SM9BLS::G1Point>(
         ::CAMatrix::Crypto::SM9BLS::G1Point::generator() * rPrime);
     auto u = *uPtr;

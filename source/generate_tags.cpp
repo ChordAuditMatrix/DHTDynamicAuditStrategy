@@ -29,13 +29,16 @@
  *          6. Create DHTDynamicTag{sigma=σ_i}
  *          7. Store tag in Tags container (0-based index, aligned with SM9Static)
  *
- *          Initial metadata: version=1, timestamp=0 (set when file is first uploaded).
+ *          Initial metadata: version=1, timestamp=now() (epoch seconds).
  *          When a block is updated, the Admin must regenerate the tag with the new
  *          version/timestamp via generateTags() before calling maintenance().
  *
- *          Note: generateTags is purely responsible for generating tags.
- *          StateStore operations (addFile, insertBlock) are the caller's
- *          responsibility, not a side effect of tag generation.
+ *          Note: generateTags auto-registers the file and any missing blocks
+ *          into the stateStore, so tags and stateStore metadata stay consistent.
+ *          If the file does not exist in stateStore, an empty file entry is
+ *          created and blocks are registered on-demand. If stateStore is not
+ *          injected, tag generation falls back to default metadata (version=1,
+ *          timestamp=0), but this path is discouraged.
  *
  *          Unlike SM9Static (σ_i = [x_ID](W_i + [m_i]U) + D_ID),
  *          DHTDynamic uses a BLS-based signature with message commitment:
@@ -124,9 +127,27 @@ DHTDynamicAuditStrategy::generateTags(
         });
     tags->reserve(targetIndices.size());
 
+    // ── Ensure file is registered in stateStore ──
+    // When the file is not yet in the stateStore (e.g., initial upload),
+    // auto-register it so that tags and stateStore stay consistent.
+    // Both tag generation and challenge generation then read from the same
+    // stateStore entry — no silent default-then-mismatch divergence.
+    //
+    // We create an empty file (addFile) and register individual blocks
+    // on-demand inside the loop via collection->set(), which writes
+    // directly without shift semantics.  insertBlock() is unsuitable here
+    // because it shifts existing entries (maintenance semantics, not
+    // fresh registration) and is order-dependent on targetIndices.
+    if (stateStore_ && !stateStore_->hasFile(ext->fileId)) {
+        stateStore_->addFile(ext->fileId);
+    }
+
     // ── Generate tags for each target block index ──
     for (const auto blockIndex : targetIndices) {
-        // Read per-block metadata from stateStore; fall back to defaults if not available
+        // Read per-block metadata from stateStore; auto-register if missing.
+        // If stateStore is not injected, fall back to default metadata
+        // (version=1, timestamp=0) — but this path is discouraged; the
+        // caller should inject a stateStore before generateTags().
         CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata metadata;
         if (stateStore_) {
             try {
@@ -136,7 +157,18 @@ DHTDynamicAuditStrategy::generateTags(
                     metadata = *dynMeta;
                 }
             } catch (const std::runtime_error&) {
-                // Block not in stateStore — use defaults (version=1, timestamp=0)
+                // Block not in stateStore — auto-register by writing directly
+                // to the collection at the correct 0-based index.
+                // This uses the same metadata values as the stateStore's
+                // factory (version=1, timestamp=now) so tag and stateStore
+                // match exactly.
+                const auto now = static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count());
+                auto newMeta = std::make_shared<CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(1, now);
+                auto collection = stateStore_->getBlockMetadataCollection(ext->fileId);
+                collection->set(blockIndex - 1, newMeta);
+                metadata = *newMeta;
             }
         }
 

@@ -90,6 +90,16 @@ DHTDynamicAuditStrategy::generateChallenges(
         return result;
     }
 
+    // ── Validate file exists in stateStore ──
+    // generateTags() auto-registers files, but defend against callers that
+    // skip that step — returning empty challenges is safer than crashing.
+    if (!stateStore_->hasFile(ext->fileId)) {
+        spdlog::warn("DHTDynamicAuditStrategy::generateChallenges: file '{}' not in stateStore",
+                     ext->fileId);
+        result.challenges = std::make_shared<DHTDynamicChallenges>();
+        return result;
+    }
+
     // ── Check algorithm availability for random generation ──
     if (!algorithm_) {
         throw std::runtime_error("SM9BLS algorithm required for challenge generation");
@@ -198,13 +208,17 @@ DHTDynamicAuditStrategy::generateChallenges(
 
     // ── Populate metadata from stateStore for each challenge item ──
     for (auto& item : items) {
-        auto metadata = stateStore_->getBlockMetadata(ext->fileId, item.blockIndex);
-        // DynamicPdpStateStore returns shared_ptr<BlockMetadata> — cast to concrete type
-        auto dynMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(metadata);
-        if (dynMeta) {
-            item.metadata = *dynMeta;
+        try {
+            auto metadata = stateStore_->getBlockMetadata(ext->fileId, item.blockIndex);
+            auto dynMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(metadata);
+            if (dynMeta) {
+                item.metadata = *dynMeta;
+            }
+        } catch (const std::runtime_error& e) {
+            spdlog::warn("DHTDynamicAuditStrategy::generateChallenges: failed to get metadata "
+                         "for blockIndex={} of file '{}': {}",
+                         item.blockIndex, ext->fileId, e.what());
         }
-        // If cast fails, item.metadata keeps default values (version=1, timestamp=0)
     }
 
     // ── Build final challenges object ──

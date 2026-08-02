@@ -136,7 +136,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCAM_BUILD_TESTS=OFF \
+            -DCAM_BUILD_TESTS=ON \
             -DCAM_GENERATE_DOCS=OFF \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 
@@ -150,13 +150,18 @@ jobs:
             -DCMAKE_C_COMPILER=clang-cl `
             -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCAM_BUILD_TESTS=OFF `
+            -DCAM_BUILD_TESTS=ON `
             -DCAM_GENERATE_DOCS=OFF
 
-      - name: Build shared library
+      - name: Build shared library and tests
         shell: bash
         run: |
-          cmake --build build --parallel --target DHTDynamicAuditStrategy
+          cmake --build build --parallel
+
+      - name: Run tests
+        shell: bash
+        run: |
+          ctest --test-dir build --output-on-failure
 
       # ----------------------------------------------------------------------
       # Package the shared library (only on tag pushes)

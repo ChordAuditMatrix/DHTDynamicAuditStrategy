@@ -10,13 +10,9 @@ include(CheckCXXSourceCompiles)
 option(CAM_STANDALONE "Build as standalone project (on) or as part of ChordAuditMatrix (off)" ON)
 option(CAM_BUILD_TESTS "Build tests" OFF)
 option(CAM_GENERATE_DOCS "Generate Doxygen documentation" OFF)
-
-# ==================== CoreLib Dependency ====================
-if(CAM_STANDALONE)
-    add_subdirectory(3rdparty/CoreLib EXCLUDE_FROM_ALL)
-endif()
-
 # ==================== Sanitizer ====================
+# Must be set BEFORE add_subdirectory(3rdparty/CoreLib) so that CoreLib's
+# 3rdparty libraries (jsoncpp, spdlog, GmSSL) also get ASan instrumentation.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_REQUIRED_FLAGS "-fsanitize=address -fno-omit-frame-pointer")
 
@@ -39,8 +35,30 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     endif()
 endif()
 
+# ==================== CoreLib Dependency ====================
+# Disable CoreLib's own test registration to avoid NOT_BUILT test targets
+# leaking into our ctest run. CoreLib's tests are maintained in the main
+# ChordAuditMatrix monorepo, not here.
+if(CAM_STANDALONE)
+    set(CAM_BUILD_TESTS_SAVED "${CAM_BUILD_TESTS}")
+    set(CAM_BUILD_TESTS OFF CACHE BOOL "CoreLib tests are in main project" FORCE)
+    add_subdirectory(3rdparty/CoreLib EXCLUDE_FROM_ALL)
+    set(CAM_BUILD_TESTS "${CAM_BUILD_TESTS_SAVED}" CACHE BOOL "Build and run tests" FORCE)
+endif()
+
+# ==================== Deploy Configuration ====================
+# Include CAMDeploy to unify output directories (CMAKE_RUNTIME_OUTPUT_DIRECTORY,
+# CMAKE_LIBRARY_OUTPUT_DIRECTORY, etc.) so that DLLs and test executables land
+# in the same directory. Without this, gtest_discover_tests fails on Windows
+# with exit code 0xc0000135 (DLL not found) because the test exe cannot locate
+# DHTDynamicAuditStrategy.dll / ChordAuditMatrixLib.dll.
+if(CAM_STANDALONE)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/CoreLib/.cmake/CAMDeploy.cmake)
+endif()
+
 # ==================== Windows Export ====================
-if(CMAKE_C_COMPILER_ID MATCHES "MSVC")
+if(WIN32)
+    add_compile_definitions(NOMINMAX _WINSOCKAPI_ _CRT_SECURE_NO_WARNINGS)
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
@@ -76,6 +94,12 @@ else()
         PREFIX "")
 endif()
 
+
+# ==================== Tests ====================
+if(CAM_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 # ==================== Doxygen ====================
 if(CAM_GENERATE_DOCS)
     find_package(Doxygen QUIET)

@@ -208,17 +208,13 @@ DHTDynamicAuditStrategy::generateChallenges(
 
     // ── Populate metadata from stateStore for each challenge item ──
     for (auto& item : items) {
-        try {
-            auto metadata = stateStore_->getBlockMetadata(ext->fileId, item.blockIndex);
-            auto dynMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(metadata);
-            if (dynMeta) {
-                item.metadata = *dynMeta;
-            }
-        } catch (const std::runtime_error& e) {
-            spdlog::warn("DHTDynamicAuditStrategy::generateChallenges: failed to get metadata "
-                         "for blockIndex={} of file '{}': {}",
-                         item.blockIndex, ext->fileId, e.what());
+        auto metadata = stateStore_->getBlockMetadata(ext->fileId, item.blockIndex);
+        auto dynMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(metadata);
+        if (!dynMeta) {
+            throw std::runtime_error("DHTDynamicAuditStrategy::generateChallenges: block " +
+                std::to_string(item.blockIndex) + " metadata is not VersionedBlockMetadata");
         }
+        item.metadata = *dynMeta;
     }
 
     // ── Build final challenges object ──

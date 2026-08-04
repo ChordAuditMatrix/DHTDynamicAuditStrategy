@@ -160,11 +160,6 @@ void DynamicHashTableStateStore::modifyBlock(
     }
 
     const std::size_t collIdx = blockIndex - 1;
-    if (!it->second->contains(collIdx)) {
-        throw std::runtime_error(
-            "DynamicHashTableStateStore::modifyBlock: blockIndex " +
-            std::to_string(blockIndex) + " out of range for file '" + fileId + "'");
-    }
 
     auto existing = it->second->getByIndex(collIdx);
     if (!existing) {
@@ -176,6 +171,8 @@ void DynamicHashTableStateStore::modifyBlock(
 
     // Bump metadata in-place: increment version and refresh timestamp
     existing->bump();
+    // Write back to collection so repo-backed implementations persist the change.
+    it->second->set(collIdx, existing);
 }
 
 void DynamicHashTableStateStore::insertBlock(
@@ -242,10 +239,12 @@ void DynamicHashTableStateStore::deleteBlock(
     const std::size_t collIdx = blockIndex - 1;
     auto& collection = it->second;
 
-    if (!collection->contains(collIdx)) {
+    // Verify the block exists (getByIndex triggers lazy load for repo-backed collections).
+    auto existing = collection->getByIndex(collIdx);
+    if (!existing) {
         throw std::runtime_error(
             "DynamicHashTableStateStore::deleteBlock: blockIndex " +
-            std::to_string(blockIndex) + " out of range for file '" + fileId + "'");
+            std::to_string(blockIndex) + " not found for file '" + fileId + "'");
     }
 
     // For sparse map-based storage, we need to:

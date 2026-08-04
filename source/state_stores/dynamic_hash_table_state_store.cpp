@@ -108,13 +108,12 @@ DynamicHashTableStateStore::getBlockMetadata(
 
     // blockIndex is 1-based, collection is 0-based
     const std::size_t collIdx = blockIndex - 1;
-    if (!it->second->contains(collIdx)) {
-        throw std::runtime_error(
-            "DynamicHashTableStateStore::getBlockMetadata: blockIndex " +
-            std::to_string(blockIndex) + " out of range for file '" + fileId +
-            "' (block count: " + std::to_string(it->second->size()) + ")");
-    }
 
+    // Use getByIndex() directly — it triggers doLoadBlock() on cache miss,
+    // which is required for LazyBlockMetadataCollection to load from the
+    // Repository on demand. Using contains() first would short-circuit the
+    // lazy load because LazyBlockMetadataCollection::contains() only checks
+    // the in-memory cache, not the backing Repository.
     auto meta = it->second->getByIndex(collIdx);
     if (!meta) {
         throw std::runtime_error(

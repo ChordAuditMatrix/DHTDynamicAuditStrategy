@@ -131,7 +131,7 @@ std::size_t DynamicHashTableStateStore::getBlockCount(const std::string& fileId)
         throw std::runtime_error("DynamicHashTableStateStore::getBlockCount: file '" +
             fileId + "' does not exist");
     }
-    return it->second->size();
+    return it->second->totalSize();
 }
 
 BlockMetadataCollectionPtr

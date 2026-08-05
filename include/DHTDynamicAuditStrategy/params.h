@@ -54,17 +54,17 @@ namespace CAMatrix::Audit::Strategies::DHTDynamic {
  */
 class DHTDynamicAlgoPublicParams final : public ::CAMatrix::Audit::Messages::AlgoPublicParams {
 public:
-    /**
-     * @brief Serialize empty algo public params
-     * @param ar [OUT] cereal BinaryOutputArchive (no-op)
-     */
-    void do_serialize(cereal::BinaryOutputArchive& ar) const override {}
+    /** @brief Placeholder marker indicating no KGC algorithm-level params. */
+    static constexpr std::uint8_t kEmptyMarker = 0x00;
 
-    /**
-     * @brief Deserialize empty algo public params
-     * @param ar [IN] cereal BinaryInputArchive (no-op)
-     */
-    void do_deserialize(cereal::BinaryInputArchive& ar) override {}
+    void do_serialize(cereal::BinaryOutputArchive& ar) const override {
+        CEREAL_NVP_SERIALIZE(ar, "emptyMarker", kEmptyMarker);
+    }
+
+    void do_deserialize(cereal::BinaryInputArchive& ar) override {
+        std::uint8_t emptyMarker;
+        CEREAL_NVP_SERIALIZE(ar, "emptyMarker", emptyMarker);
+    }
 };
 
 /**
@@ -75,17 +75,17 @@ public:
  */
 class DHTDynamicAlgoPrivateParams final : public ::CAMatrix::Audit::Messages::AlgoPrivateParams {
 public:
-    /**
-     * @brief Serialize empty algo private params
-     * @param ar [OUT] cereal BinaryOutputArchive (no-op)
-     */
-    void do_serialize(cereal::BinaryOutputArchive& ar) const override {}
+    /** @brief Placeholder marker indicating no KGC algorithm-level params. */
+    static constexpr std::uint8_t kEmptyMarker = 0x00;
 
-    /**
-     * @brief Deserialize empty algo private params
-     * @param ar [IN] cereal BinaryInputArchive (no-op)
-     */
-    void do_deserialize(cereal::BinaryInputArchive& ar) override {}
+    void do_serialize(cereal::BinaryOutputArchive& ar) const override {
+        CEREAL_NVP_SERIALIZE(ar, "emptyMarker", kEmptyMarker);
+    }
+
+    void do_deserialize(cereal::BinaryInputArchive& ar) override {
+        std::uint8_t emptyMarker;
+        CEREAL_NVP_SERIALIZE(ar, "emptyMarker", emptyMarker);
+    }
 };
 
 // ── User-level params ──

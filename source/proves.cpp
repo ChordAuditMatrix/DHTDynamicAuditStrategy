@@ -47,27 +47,29 @@ DHTDynamicProves::~DHTDynamicProves() = default;
 
 void DHTDynamicProves::do_serialize(cereal::BinaryOutputArchive& ar) const
 {
-    // theta_: SM9GTElement → binary blob via serialize()
+    // theta_: SM9GTElement → CryptoArray (std::vector<uint8_t>) via serialize()
     auto thetaData = theta_.serialize();
-    CEREAL_SERIALIZE_BINARY_FIELD(ar, "dht_dynamic_proves_theta", thetaData);
+    CEREAL_NVP_SERIALIZE(ar, "dht_dynamic_proves_theta", thetaData);
 
-    // lambda_: SM9GTElement → binary blob via serialize()
+    // lambda_: SM9GTElement → CryptoArray (std::vector<uint8_t>) via serialize()
     auto lambdaData = lambda_.serialize();
-    CEREAL_SERIALIZE_BINARY_FIELD(ar, "dht_dynamic_proves_lambda", lambdaData);
+    CEREAL_NVP_SERIALIZE(ar, "dht_dynamic_proves_lambda", lambdaData);
 }
 
 void DHTDynamicProves::do_deserialize(cereal::BinaryInputArchive& ar)
 {
-    // theta_: SM9GTElement ← binary blob via deserialize()
+    // theta_: SM9GTElement ← CryptoArray via deserialize()
+    // CEREAL_NVP_SERIALIZE handles vector size automatically (unlike
+    // CEREAL_SERIALIZE_BINARY_FIELD which requires pre-sized buffer).
     CAMatrix::Crypto::CryptoArray thetaData;
-    CEREAL_SERIALIZE_BINARY_FIELD(ar, "dht_dynamic_proves_theta", thetaData);
+    CEREAL_NVP_SERIALIZE(ar, "dht_dynamic_proves_theta", thetaData);
     if (!theta_.deserialize(thetaData)) {
         throw std::runtime_error("DHTDynamicProves: failed to deserialize theta");
     }
 
-    // lambda_: SM9GTElement ← binary blob via deserialize()
+    // lambda_: SM9GTElement ← CryptoArray via deserialize()
     CAMatrix::Crypto::CryptoArray lambdaData;
-    CEREAL_SERIALIZE_BINARY_FIELD(ar, "dht_dynamic_proves_lambda", lambdaData);
+    CEREAL_NVP_SERIALIZE(ar, "dht_dynamic_proves_lambda", lambdaData);
     if (!lambda_.deserialize(lambdaData)) {
         throw std::runtime_error("DHTDynamicProves: failed to deserialize lambda");
     }

@@ -128,19 +128,26 @@ DHTDynamicAuditStrategy::generateChallenges(
         return result;
     }
 
-    // ── Determine challenge count ──
-    const std::size_t count = std::min(
-        ext->challengeCount == 0 ? blockCount : ext->challengeCount,
-        blockCount);
-
-    // ── Select random block indices (1-based) ──
-    std::unordered_set<std::size_t> picked;
-    picked.reserve(count);
-
+    // Deterministic RNG when usePseudoRandom + seed are supplied (count draw
+    // and block sampling both derive from it, so a fixed seed reproduces the
+    // whole challenge set); otherwise true-random per run. Semantics kept
+    // consistent with SM9StaticAuditStrategy.
     std::mt19937_64 rng(
         (ext->usePseudoRandom && ext->seed.has_value())
             ? ext->seed.value()
             : std::random_device{}());
+
+    // ── Determine challenge count ──
+    // An explicit challengeCount (> 0) is honored as-is, capped at blockCount.
+    // When challengeCount is absent or 0, draw a random count k uniformly from
+    // [1, blockCount] and challenge exactly k blocks — NOT all blocks.
+    const std::size_t count = (ext->challengeCount != 0)
+        ? std::min(ext->challengeCount, blockCount)
+        : std::uniform_int_distribution<std::size_t>(1, blockCount)(rng);
+
+    // ── Select random block indices (1-based) ──
+    std::unordered_set<std::size_t> picked;
+    picked.reserve(count);
 
     // 1-based index range: [1, blockCount] (consistent with SM9Static)
     std::uniform_int_distribution<std::size_t> dist(1, blockCount);

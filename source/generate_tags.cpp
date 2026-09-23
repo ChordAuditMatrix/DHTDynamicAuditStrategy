@@ -57,15 +57,81 @@
 #include "DHTDynamicAuditStrategy/common.h"
 #include "DHTDynamicAuditStrategy/tags.h"
 #include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/dynamic_pdp_state_store.h"
+#include "ChordAuditMatrixLib/interfaces/audit/state_stores/dynamic_pdp_state_store.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/in_memory_tags.h"
 #include "ChordAuditMatrixLib/interfaces/audit/dynamic_strategy.h"
 
 #include <memory>
+#include <algorithm>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace CAMatrix::Audit::Strategies {
 
 using namespace DHTDynamic;
+
+namespace {
+
+/**
+ * @brief Resolve the optional target selector into the 1-based global indices to tag
+ *
+ * Absent or empty selector ⇒ every block of the source window.
+ * A non-empty selector must hold distinct 1-based GLOBAL indices that all fall
+ * inside the window.  Window membership is checked with comparisons only
+ * (`index > windowStart && index - windowStart <= blockCount`) so an unvalidated
+ * value is never used in a subtraction — a zero or out-of-window index cannot
+ * underflow or slip past the check.  The check runs before any StateStore read
+ * or write, so a rejected selector leaves no trace in the store.
+ *
+ * @param selector [IN] Optional caller-supplied selector
+ * @param windowStart [IN] Global 0-based index of the window's first block
+ * @param blockCount [IN] Number of blocks available in the window
+ * @return std::vector<std::size_t> 1-based global indices to generate tags for
+ * @throws std::runtime_error when the selector is not a set of distinct
+ *         1-based global indices inside the window
+ */
+std::vector<std::size_t> resolveTargetBlockIndices(
+    const std::optional<std::vector<std::size_t>>& selector,
+    std::size_t windowStart,
+    std::size_t blockCount)
+{
+    std::vector<std::size_t> indices;
+
+    if (!selector.has_value() || selector->empty()) {
+        // Default: generate tags for all blocks in the source window
+        indices.reserve(blockCount);
+        for (std::size_t i = 0; i < blockCount; ++i) {
+            indices.push_back(windowStart + i + 1);
+        }
+        return indices;
+    }
+
+    for (const std::size_t index : *selector) {
+        if (!(index > windowStart && (index - windowStart) <= blockCount)) {
+            throw std::runtime_error(
+                "DHTDynamic generateTags: targetBlockIndices entry " + std::to_string(index) +
+                " is not a valid 1-based global block index inside the source window ["
+                + std::to_string(windowStart + 1) + ", " + std::to_string(windowStart + blockCount)
+                + "]");
+        }
+    }
+
+    // Distinctness: duplicate indices would silently register/overwrite the same
+    // block twice and hide a caller mistake, so reject instead.  Sorted output
+    // also gives a deterministic generation order.
+    indices = *selector;
+    std::sort(indices.begin(), indices.end());
+    if (std::adjacent_find(indices.begin(), indices.end()) != indices.end()) {
+        throw std::runtime_error(
+            "DHTDynamic generateTags: targetBlockIndices must contain distinct block indices");
+    }
+
+    return indices;
+}
+
+} // namespace
 
 CAMatrix::Audit::Messages::GenerateTagsResult
 DHTDynamicAuditStrategy::generateTags(
@@ -100,24 +166,20 @@ DHTDynamicAuditStrategy::generateTags(
         return result;
     }
 
+    const std::size_t windowStart = input.blocks->globalBlockStartIndex();
     const std::size_t blockCount = input.blocks->availableBlockCount();
     const SM9CryptoData& a = ext->userPrivateParams->a;
     const G1Point& u = ext->userPublicParams->u;
 
     // ── Determine which block indices to generate tags for ──
-    // When targetBlockIndices is set, only generate tags for the specified
-    // 1-based global block indices.  When unset, generate for all blocks in
-    // the source (backward compatible default behaviour).
-    std::vector<std::size_t> targetIndices;
-    if (input.targetBlockIndices.has_value()) {
-        targetIndices = input.targetBlockIndices.value();
-    } else {
-        // Default: generate tags for all blocks in the source
-        targetIndices.reserve(blockCount);
-        for (std::size_t i = 0; i < blockCount; ++i) {
-            targetIndices.push_back(input.blocks->globalBlockStartIndex() + i + 1);
-        }
-    }
+    // targetBlockIndices holds 1-based GLOBAL block indices.  Absent or empty
+    // means "every block of the source window" (backward compatible default).
+    // A non-empty selector must hold distinct in-window indices: zero,
+    // out-of-window and duplicate values are rejected HERE — before the
+    // StateStore is read or written and before any block is accessed — so a
+    // bad selector cannot mutate DHT metadata/state.
+    const std::vector<std::size_t> targetIndices =
+        resolveTargetBlockIndices(input.targetBlockIndices, windowStart, blockCount);
 
     // ── Create tag container ──
     auto tags = std::make_shared<CAMatrix::Audit::Messages::InMemoryTags>(
@@ -182,8 +244,10 @@ DHTDynamicAuditStrategy::generateTags(
         // making stale tags detectable.
         const G1Point H_i = DHTDynamic::computeBlockHash(ext->fileId, blockIndex, metadata);
 
-        // Compute the 0-based local index within the block source
-        const std::size_t localIndex = blockIndex - 1 - input.blocks->globalBlockStartIndex();
+        // Compute the 0-based local index within the block source.
+        // windowStart and the block index were validated above, so the
+        // subtraction cannot underflow.
+        const std::size_t localIndex = blockIndex - 1 - windowStart;
 
         // Block content — split into 32-byte segments for tag generation
         const std::vector<std::uint8_t> block = input.blocks->block(localIndex);

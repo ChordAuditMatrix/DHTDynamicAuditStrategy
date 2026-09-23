@@ -41,7 +41,7 @@
 #ifndef DHTDYNAMIC_DYNAMIC_HASH_TABLE_STATE_STORE_H
 #define DHTDYNAMIC_DYNAMIC_HASH_TABLE_STATE_STORE_H
 
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/dynamic_pdp_state_store.h"
+#include "ChordAuditMatrixLib/interfaces/audit/state_stores/dynamic_pdp_state_store.h"
 #include "ChordAuditMatrixLib/implementations/audit/state_stores/in_memory_block_metadata_collection.h"
 #include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 

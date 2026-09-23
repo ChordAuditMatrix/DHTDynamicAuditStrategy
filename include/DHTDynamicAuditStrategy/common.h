@@ -36,7 +36,7 @@
 #include "DHTDynamicAuditStrategy/request_ext.h"
 #include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 #include "DHTDynamicAuditStrategy/maintain_types.h"
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/dynamic_pdp_state_store.h"
+#include "ChordAuditMatrixLib/interfaces/audit/state_stores/dynamic_pdp_state_store.h"
 #include "DHTDynamicAuditStrategy/state_stores/dynamic_hash_table_state_store.h"
 #include "DHTDynamicAuditStrategy/tags.h"
 #include "DHTDynamicAuditStrategy/challenges.h"

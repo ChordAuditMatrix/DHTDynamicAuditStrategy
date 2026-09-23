@@ -23,7 +23,7 @@
 
 #include "ChordAuditMatrixLib/interfaces/audit/engine.h"
 #include "ChordAuditMatrixLib/interfaces/audit/dynamic_strategy.h"
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/dynamic_pdp_state_store.h"
+#include "ChordAuditMatrixLib/interfaces/audit/state_stores/dynamic_pdp_state_store.h"
 #include "DHTDynamicAuditStrategy/state_stores/dynamic_hash_table_state_store.h"
 #include "DHTDynamicAuditStrategy/strategy.h"
 

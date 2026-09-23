@@ -47,7 +47,7 @@
 #include "DHTDynamicAuditStrategy/common.h"
 #include "DHTDynamicAuditStrategy/challenges.h"
 #include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
-#include "ChordAuditMatrixLib/implementations/audit/state_stores/dynamic_pdp_state_store.h"
+#include "ChordAuditMatrixLib/interfaces/audit/state_stores/dynamic_pdp_state_store.h"
 #include "ChordAuditMatrixLib/interfaces/audit/dynamic_strategy.h"
 
 #include <algorithm>

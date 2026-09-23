@@ -77,11 +77,13 @@
 #include "ChordAuditMatrixLib/implementations/audit/data/memory_audit_block_packer.h"
 
 #include <json/json.h>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -1028,6 +1030,324 @@ TEST(DhtDynamicFull, ResultSerializationRoundtrip)
     EXPECT_TRUE(ctx.verifyProofsResult->ok) << "ser: verification succeeded";
     expectSerializationRoundtrip(*ctx.verifyProofsResult);
 
+}
+
+// ═══════════════════════════════════════════════════════════════
+// targetBlockIndices selector semantics
+//
+// Contract under test:
+//   - absent OR empty selector  → full AuditBlockSource window
+//   - wrong-typed value         → rejected (never silently treated as absent)
+//   - 0 / out-of-window index   → rejected BEFORE any DHT state mutation
+//   - non-contiguous selection  → sparse output keys stay GLOBAL zero-based
+// ═══════════════════════════════════════════════════════════════
+
+/// Build a GenerateTags RawInput for `fileId` with an optional selector.
+static AuditMsg::RawInput
+selectorTagsInput(const AuditData::AuditBlockSourcePtr &blocks,
+                  const std::string &fileId,
+                  const std::optional<std::vector<std::size_t>> &selector)
+{
+    auto tagsMap = std::make_shared<AuditMsg::AuditDataMap>();
+    tagsMap->emplace("blocks", blocks);
+    tagsMap->emplace("fileId", std::string(fileId));
+    if (selector.has_value()) {
+        tagsMap->emplace("targetBlockIndices", *selector);
+    }
+    return AuditMsg::RawInput(tagsMap);
+}
+
+/// Build a source of `blockCount` deterministic blocks with a known global offset.
+static AuditData::AuditBlockSourcePtr
+makeFixedBlockSource(std::size_t blockCount, std::size_t blockSize, std::size_t globalStart)
+{
+    std::vector<std::vector<std::uint8_t>> blocks;
+    blocks.reserve(blockCount);
+    for (std::size_t i = 0; i < blockCount; ++i) {
+        std::vector<std::uint8_t> block(blockSize);
+        for (std::size_t j = 0; j < blockSize; ++j) {
+            block[j] = static_cast<std::uint8_t>((i * 31 + j * 17) & 0xFF);
+        }
+        blocks.push_back(std::move(block));
+    }
+    return std::make_shared<AuditData::MemoryAuditBlockSource>(blocks, blockSize, globalStart);
+}
+
+/// Init + KeyGen a fresh DHTDynamic engine over `stateStore`.
+static std::shared_ptr<AuditCore::AuditEngine>
+initAndKeygenDhtDynamic(
+    const std::shared_ptr<AuditStrat::DHTDynamic::DynamicHashTableStateStore> &stateStore,
+    AuditCore::AuditOperationContext &ctx)
+{
+    auto engine = createDhtDynamicEngine(stateStore);
+    engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
+    ::Json::Value keyJson;
+    keyJson["seed"] = static_cast<::Json::UInt64>(7);
+    engine->generateKeys(jsonInput(keyJson), ctx);
+    return engine;
+}
+
+TEST(DhtDynamicSelector, AbsentAndEmptySelectFullWindow)
+{
+    const std::string fileId = "dhtd-selector-full-window";
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext ctx;
+    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+    ASSERT_TRUE(ctx.generateKeysResult.has_value());
+
+    auto blocks = makeFixedBlockSource(6, 64, 0); // 6 blocks, global start 0
+    const std::size_t blockCount = blocks->availableBlockCount();
+    ASSERT_EQ(blockCount, 6u);
+
+    // Absent selector → every block of the window.
+    engine->generateTags(selectorTagsInput(blocks, fileId, std::nullopt), ctx);
+    ASSERT_TRUE(ctx.generateTagsResult.has_value());
+    ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
+    ASSERT_EQ(ctx.generateTagsResult->tags->size(), blockCount);
+    const auto fullTags = ctx.generateTagsResult->tags;
+    const auto fullTagAtZero = fullTags->getByIndex(0)->serialize();
+    EXPECT_EQ(stateStore->getBlockCount(fileId), blockCount);
+
+    // Empty selector → same full window (NOT "no blocks at all").
+    AuditCore::AuditOperationContext emptyCtx = ctx;
+    engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{}), emptyCtx);
+    ASSERT_TRUE(emptyCtx.generateTagsResult.has_value());
+    ASSERT_NE(emptyCtx.generateTagsResult->tags, nullptr);
+    EXPECT_EQ(emptyCtx.generateTagsResult->tags->size(), blockCount);
+    EXPECT_EQ(emptyCtx.generateTagsResult->tags->maxIndex(), blockCount);
+    EXPECT_TRUE(emptyCtx.generateTagsResult->tags->contains(blockCount - 1));
+    EXPECT_EQ(emptyCtx.generateTagsResult->tags->getByIndex(0)->serialize(), fullTagAtZero);
+}
+
+TEST(DhtDynamicSelector, WrongTypeIsRejected)
+{
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext ctx;
+    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+
+    auto blocks = makeFixedBlockSource(4, 64, 0);
+
+    // std::vector<int> is not the contract type.  Rejecting beats the old
+    // getOptional() behaviour, which silently fell back to the full window.
+    auto tagsMap = std::make_shared<AuditMsg::AuditDataMap>();
+    tagsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blocks));
+    tagsMap->emplace("fileId", std::string("dhtd-selector-wrong-type"));
+    tagsMap->emplace("targetBlockIndices", std::vector<int>{1, 2});
+
+    EXPECT_THROW(engine->generateTags(AuditMsg::RawInput(tagsMap), ctx), std::runtime_error);
+    EXPECT_FALSE(ctx.generateTagsResult.has_value());
+    // createRequest rejected before generateTags ran — no state registered.
+    EXPECT_FALSE(stateStore->hasFile("dhtd-selector-wrong-type"));
+}
+
+TEST(DhtDynamicSelector, ZeroAndOutOfWindowRejectedWithoutStateMutation)
+{
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext ctx;
+    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+
+    auto blocks = makeFixedBlockSource(6, 64, 0);
+    const std::size_t blockCount = blocks->availableBlockCount();
+    ASSERT_EQ(blockCount, 6u);
+
+    const std::string fileId = "dhtd-selector-no-mutation";
+    ASSERT_FALSE(stateStore->hasFile(fileId));
+
+    // 0 is not a 1-based index; blockCount+1 is past the window's last block.
+    // Both must be rejected before the stateStore is touched — in particular
+    // before addFile() and before any metadata registration.
+    for (const std::size_t bad : {std::size_t{0}, blockCount + 1}) {
+        AuditCore::AuditOperationContext badCtx = ctx;
+        EXPECT_THROW(
+            engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{bad}),
+                                 badCtx),
+            std::runtime_error)
+            << "block index " << bad << " must be rejected";
+        EXPECT_FALSE(badCtx.generateTagsResult.has_value());
+        EXPECT_FALSE(stateStore->hasFile(fileId)) << "state mutated for index " << bad;
+        EXPECT_TRUE(stateStore->listFiles().empty()) << "state mutated for index " << bad;
+    }
+
+    // Duplicate indices are rejected too — still untouched.
+    AuditCore::AuditOperationContext dupCtx = ctx;
+    EXPECT_THROW(
+        engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{3, 3}),
+                             dupCtx),
+        std::runtime_error);
+    EXPECT_FALSE(stateStore->hasFile(fileId));
+}
+
+TEST(DhtDynamicSelector, NonContiguousWindowRegistersOnlySelectedBlocks)
+{
+    const std::string fileId = "dhtd-selector-window";
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext ctx;
+    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+
+    auto full = makeFixedBlockSource(6, 64, 0); // 6 blocks, global start 0
+    const std::size_t blockSize = full->blockSize();
+    ASSERT_EQ(full->availableBlockCount(), 6u);
+
+    // Full-window run first: registers blocks 1..6 and fixes their metadata.
+    engine->generateTags(selectorTagsInput(full, fileId, std::nullopt), ctx);
+    ASSERT_TRUE(ctx.generateTagsResult.has_value());
+    ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
+    const auto fullTags = ctx.generateTagsResult->tags;
+    ASSERT_TRUE(fullTags->contains(2));
+    ASSERT_TRUE(fullTags->contains(5));
+    const auto fullTagAtTwo = fullTags->getByIndex(2)->serialize();
+    const auto fullTagAtFive = fullTags->getByIndex(5)->serialize();
+
+    // Window covering 1-based blocks [3, 6] → global 0-based start 2, 4 blocks.
+    std::vector<std::vector<std::uint8_t>> windowBlocks;
+    for (std::size_t i = 2; i < 6; ++i) {
+        windowBlocks.push_back(full->block(i));
+    }
+    auto window = std::make_shared<AuditData::MemoryAuditBlockSource>(windowBlocks, blockSize, 2);
+    ASSERT_EQ(window->availableBlockCount(), 4u);
+    ASSERT_EQ(window->globalBlockStartIndex(), 2u);
+
+    // Non-contiguous selection inside the window: 1-based blocks 3 and 6.
+    AuditCore::AuditOperationContext winCtx = ctx;
+    engine->generateTags(selectorTagsInput(window, fileId, std::vector<std::size_t>{3, 6}), winCtx);
+
+    ASSERT_TRUE(winCtx.generateTagsResult.has_value());
+    ASSERT_NE(winCtx.generateTagsResult->tags, nullptr);
+    const auto windowTags = winCtx.generateTagsResult->tags;
+
+    // Sparse output keys are the GLOBAL zero-based indices of the selected blocks.
+    EXPECT_EQ(windowTags->size(), 2u);
+    EXPECT_TRUE(windowTags->contains(2));
+    EXPECT_TRUE(windowTags->contains(5));
+    EXPECT_FALSE(windowTags->contains(3));
+    EXPECT_FALSE(windowTags->contains(4));
+    EXPECT_EQ(windowTags->maxIndex(), 6u);
+
+    // Same global index + same metadata + same content ⇒ identical tag.
+    EXPECT_EQ(windowTags->getByIndex(2)->serialize(), fullTagAtTwo);
+    EXPECT_EQ(windowTags->getByIndex(5)->serialize(), fullTagAtFive);
+
+    // Selection is genuinely sparse: the window run reused the 6 existing
+    // blocks and registered nothing new (no spurious DHT state growth).
+    EXPECT_EQ(stateStore->getBlockCount(fileId), 6u);
+}
+
+TEST(DhtDynamicSelector, SparseSelectionRegistersOnlySelectedBlocks)
+{
+    const std::string fileId = "dhtd-selector-sparse-register";
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext ctx;
+    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+
+    auto blocks = makeFixedBlockSource(6, 64, 0); // 6 blocks, global start 0
+    ASSERT_EQ(blocks->availableBlockCount(), 6u);
+
+    // Fresh file, non-contiguous selection {1, 4} → exactly two registrations.
+    engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{1, 4}), ctx);
+
+    ASSERT_TRUE(ctx.generateTagsResult.has_value());
+    ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
+    EXPECT_EQ(ctx.generateTagsResult->tags->size(), 2u);
+    EXPECT_TRUE(ctx.generateTagsResult->tags->contains(0));
+    EXPECT_TRUE(ctx.generateTagsResult->tags->contains(3));
+    EXPECT_EQ(stateStore->getBlockCount(fileId), 2u);
+
+    // Unselected blocks were never registered therefore never read from the source.
+    EXPECT_NO_THROW(stateStore->getBlockMetadata(fileId, 1));
+    EXPECT_NO_THROW(stateStore->getBlockMetadata(fileId, 4));
+    EXPECT_THROW(stateStore->getBlockMetadata(fileId, 2), std::runtime_error);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Every stage input is consumed under the CoreLib stage-contract keys
+//
+// Contract under test: the plugin parses exactly the keys published by
+// GenerateTagsEngineContract / ChallengeGenEngineContract /
+// ProofGenEngineContract / ProofVerifyEngineContract, so a first-party
+// producer that writes those keys reaches the same stage input the plugin
+// reads. Values are chosen so that a key the plugin failed to read changes the
+// observable outcome (no tags, default challenge count, empty file identity).
+// ═══════════════════════════════════════════════════════════════
+
+TEST(DhtDynamicEngineContract, DeclaredKeysDriveEveryStageInput)
+{
+    using TagsKeys   = AuditMsg::GenerateTagsEngineContract::Env;
+    using ChalKeys   = AuditMsg::ChallengeGenEngineContract::Env;
+    using ProveKeys  = AuditMsg::ProofGenEngineContract::Env;
+    using VerifyKeys = AuditMsg::ProofVerifyEngineContract::Env;
+
+    const std::string fileId = "dhtd-engine-contract";
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext ctx;
+    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+    ASSERT_TRUE(ctx.generateKeysResult.has_value());
+
+    auto blocks = makeFixedBlockSource(4, 64, 0);
+    const std::size_t blockCount = blocks->availableBlockCount();
+    ASSERT_EQ(blockCount, 4u);
+
+    // ── GenerateTags: blocks + fileId (userId is unread at this stage) ──
+    auto tagsMap = std::make_shared<AuditMsg::AuditDataMap>();
+    tagsMap->emplace(std::string(TagsKeys::kBlocks), AuditData::AuditBlockSourcePtr(blocks));
+    tagsMap->emplace(std::string(TagsKeys::kFileId), std::string(fileId));
+    engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
+    ASSERT_TRUE(ctx.generateTagsResult.has_value());
+    ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
+    EXPECT_EQ(ctx.generateTagsResult->tags->size(), blockCount);
+    EXPECT_EQ(stateStore->getBlockCount(fileId), blockCount);
+
+    // ── ChallengeGen: fileId + challengeCount + usePseudoRandom + seed ──
+    // kBlockCount is deliberately left out: the strategy must then resolve the
+    // block count from the StateStore through kFileId, so a file identity that
+    // the plugin failed to read yields zero challenges instead of these two.
+    ::Json::Value chalJson;
+    chalJson[ChalKeys::kFileId]          = fileId;
+    chalJson[ChalKeys::kChallengeCount]  = static_cast<::Json::UInt64>(2);
+    chalJson[ChalKeys::kUsePseudoRandom] = true;
+    chalJson[ChalKeys::kSeed]            = static_cast<::Json::UInt64>(42);
+    engine->generateChallenges(jsonInput(chalJson), ctx);
+    ASSERT_TRUE(ctx.generateChallengesResult.has_value());
+    auto challenges = std::dynamic_pointer_cast<DHTD::DHTDynamicChallenges>(
+        ctx.generateChallengesResult->challenges);
+    ASSERT_NE(challenges, nullptr);
+    EXPECT_EQ(challenges->challengeCount(), 2u);
+    // Resolved from the StateStore via kFileId, not from the JSON body.
+    EXPECT_EQ(challenges->blockCount(), blockCount);
+
+    // Same seed ⇒ same selection: proves the seed key reached the stage.
+    AuditCore::AuditOperationContext repeatCtx;
+    repeatCtx.initializeAlgorithmResult = ctx.initializeAlgorithmResult;
+    repeatCtx.generateKeysResult = ctx.generateKeysResult;
+    repeatCtx.generateTagsResult = ctx.generateTagsResult;
+    engine->generateChallenges(jsonInput(chalJson), repeatCtx);
+    ASSERT_TRUE(repeatCtx.generateChallengesResult.has_value());
+    auto repeated = std::dynamic_pointer_cast<DHTD::DHTDynamicChallenges>(
+        repeatCtx.generateChallengesResult->challenges);
+    ASSERT_NE(repeated, nullptr);
+    ASSERT_EQ(repeated->items().size(), challenges->items().size());
+    std::vector<std::size_t> firstIndices;
+    std::vector<std::size_t> repeatedIndices;
+    for (const auto& item : challenges->items()) { firstIndices.push_back(item.blockIndex); }
+    for (const auto& item : repeated->items()) { repeatedIndices.push_back(item.blockIndex); }
+    std::sort(firstIndices.begin(), firstIndices.end());
+    std::sort(repeatedIndices.begin(), repeatedIndices.end());
+    EXPECT_EQ(repeatedIndices, firstIndices)
+        << "kSeed did not reach the stage: equally seeded runs selected different blocks";
+
+    // ── ProofGen: blocks + tags ──
+    auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
+    proofsMap->emplace(std::string(ProveKeys::kBlocks), AuditData::AuditBlockSourcePtr(blocks));
+    proofsMap->emplace(std::string(ProveKeys::kTags), AuditMsg::TagsPtr(ctx.generateTagsResult->tags));
+    engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
+    ASSERT_TRUE(ctx.generateProofsResult.has_value());
+    ASSERT_NE(ctx.generateProofsResult->proves, nullptr);
+
+    // ── ProofVerify: fileId (userId is unread by this strategy) ──
+    ::Json::Value verifyJson;
+    verifyJson[VerifyKeys::kFileId] = fileId;
+    engine->verifyProofs(jsonInput(verifyJson), ctx);
+    ASSERT_TRUE(ctx.verifyProofsResult.has_value());
+    EXPECT_TRUE(ctx.verifyProofsResult->ok) << "reason: " << ctx.verifyProofsResult->reason;
 }
 
 // ═══════════════════════════════════════════════════════════════

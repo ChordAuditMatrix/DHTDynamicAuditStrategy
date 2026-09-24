@@ -45,7 +45,34 @@
 #include <cstring>
 #include <map>
 #include <sstream>
+#include <string_view>
 #include <variant>
+
+namespace {
+
+/**
+ * @brief Wire keys this strategy reads from the engine-stage inputs.
+ * @details The keys are owned by the plugin: they are the literal strings the
+ *          first-party producers write (admin use cases, Bench), declared here
+ *          so a DHTDynamic-specific stage input never needs a shared system
+ *          contract change. Carriers: GenerateTags and ProofGen read
+ *          AuditDataMap keys, KeyGeneration, ChallengeGen, ProofVerify and
+ *          Maintenance read JSON keys.
+ */
+struct StageKeys {
+    static constexpr std::string_view kBlocks = "blocks"; /**< AuditDataMap key: block window (GenerateTags, ProofGen) */
+    static constexpr std::string_view kFileId = "fileId"; /**< key: file identity (GenerateTags, ChallengeGen, ProofVerify, Maintenance) */
+    static constexpr std::string_view kTargetBlockIndices = "targetBlockIndices"; /**< AuditDataMap key: optional 1-based global index selector (GenerateTags) */
+    static constexpr std::string_view kSeed = "seed"; /**< JSON key: deterministic selection seed (KeyGeneration, ChallengeGen) */
+    static constexpr std::string_view kBlockCount = "blockCount"; /**< JSON key: block count (ChallengeGen) */
+    static constexpr std::string_view kChallengeCount = "challengeCount"; /**< JSON key: challenge count (ChallengeGen) */
+    static constexpr std::string_view kUsePseudoRandom = "usePseudoRandom"; /**< JSON key: PRNG mode (ChallengeGen) */
+    static constexpr std::string_view kTags = "tags"; /**< AuditDataMap key: stored tag set (ProofGen) */
+    static constexpr std::string_view kOpType = "opType"; /**< JSON key: maintenance operation type (Maintenance) */
+    static constexpr std::string_view kBlockIndices = "blockIndices"; /**< JSON key: affected block indices (Maintenance) */
+};
+
+} // namespace
 
 namespace CAMatrix::Audit::Strategies {
 
@@ -101,14 +128,13 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
             auto ext = std::make_shared<DHTDynamicKeyGenRequestExt>();
 
             // Parse the optional deterministic-key seed from the JSON rawInput.
-            // "seed" is DHTDynamic-specific and consumer-only: the shared
-            // KeyGeneration contract (KeyGenerationEngineContract::Env) declares
-            // kUserId, while no first-party producer (admin user bind, Bench)
-            // writes this key yet, so the literal stays here.
+            // "seed" is DHTDynamic-specific and consumer-only: no first-party
+            // producer (admin user bind, Bench) writes this key, so it stays a
+            // plugin-local key instead of a shared stage contract key.
             const Json::Value root = rawInput.requireJson(op);
 
-            if (root.isMember("seed") && root["seed"].isUInt64()) {
-                ext->seed = root["seed"].asUInt64();
+            if (root.isMember(StageKeys::kSeed) && root[StageKeys::kSeed].isUInt64()) {
+                ext->seed = root[StageKeys::kSeed].asUInt64();
             }
 
             req->ext = ext;
@@ -135,14 +161,13 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
 
             // Parse fileId and blocks from Custom rawInput
             auto inputMap = rawInput.requireCustom<AuditDataMap>(op);
-            using TagsKeys = GenerateTagsEngineContract::Env;
 
             // Extract blocks (required)
             req->blocks = inputMap->getRequired<std::shared_ptr<CAMatrix::Audit::Data::AuditBlockSource>>(
-                std::string(TagsKeys::kBlocks));
+                std::string(StageKeys::kBlocks));
 
             // Extract fileId (required)
-            if (auto fileId = inputMap->getOptional<std::string>(std::string(TagsKeys::kFileId))) {
+            if (auto fileId = inputMap->getOptional<std::string>(std::string(StageKeys::kFileId))) {
                 ext->fileId = *fileId;
             }
 
@@ -155,13 +180,13 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
             // "full window".  A present key MUST hold std::vector<std::size_t>:
             // a wrong-typed value is rejected here instead of being treated as
             // "absent" (which would silently tag the whole window).
-            if (const auto it = inputMap->find(std::string(TagsKeys::kTargetBlockIndices));
+            if (const auto it = inputMap->find(std::string(StageKeys::kTargetBlockIndices));
                 it != inputMap->end()) {
                 if (const auto* selector = std::any_cast<std::vector<std::size_t>>(&it->second)) {
                     req->targetBlockIndices = *selector;
                 } else {
                     throw std::runtime_error(
-                        "GenerateTags '" + std::string(TagsKeys::kTargetBlockIndices) +
+                        "GenerateTags '" + std::string(StageKeys::kTargetBlockIndices) +
                         "' must be std::vector<std::size_t> (1-based global block indices)");
                 }
             }
@@ -176,29 +201,28 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
 
             // Parse challenge parameters from JSON rawInput
             const Json::Value root = rawInput.requireJson(op);
-            using ChalKeys = ChallengeGenEngineContract::Env;
 
             bool hasBlockCount = false;
-            if (root.isMember(ChalKeys::kBlockCount) && root[ChalKeys::kBlockCount].isUInt64()) {
-                ext->blockCount = static_cast<std::size_t>(root[ChalKeys::kBlockCount].asUInt64());
+            if (root.isMember(StageKeys::kBlockCount) && root[StageKeys::kBlockCount].isUInt64()) {
+                ext->blockCount = static_cast<std::size_t>(root[StageKeys::kBlockCount].asUInt64());
                 hasBlockCount = true;
             }
 
-            if (root.isMember(ChalKeys::kChallengeCount) && root[ChalKeys::kChallengeCount].isUInt64()) {
-                ext->challengeCount = static_cast<std::size_t>(root[ChalKeys::kChallengeCount].asUInt64());
+            if (root.isMember(StageKeys::kChallengeCount) && root[StageKeys::kChallengeCount].isUInt64()) {
+                ext->challengeCount = static_cast<std::size_t>(root[StageKeys::kChallengeCount].asUInt64());
             }
 
-            if (root.isMember(ChalKeys::kUsePseudoRandom) && root[ChalKeys::kUsePseudoRandom].isBool()) {
-                ext->usePseudoRandom = root[ChalKeys::kUsePseudoRandom].asBool();
+            if (root.isMember(StageKeys::kUsePseudoRandom) && root[StageKeys::kUsePseudoRandom].isBool()) {
+                ext->usePseudoRandom = root[StageKeys::kUsePseudoRandom].asBool();
             }
 
-            if (root.isMember(ChalKeys::kSeed) && root[ChalKeys::kSeed].isUInt64()) {
-                ext->seed = root[ChalKeys::kSeed].asUInt64();
+            if (root.isMember(StageKeys::kSeed) && root[StageKeys::kSeed].isUInt64()) {
+                ext->seed = root[StageKeys::kSeed].asUInt64();
             }
 
             // Parse fileId from JSON rawInput (required for stateStore queries)
-            if (root.isMember(ChalKeys::kFileId) && root[ChalKeys::kFileId].isString()) {
-                ext->fileId = root[ChalKeys::kFileId].asString();
+            if (root.isMember(StageKeys::kFileId) && root[StageKeys::kFileId].isString()) {
+                ext->fileId = root[StageKeys::kFileId].asString();
             }
 
             // Fill missing fileId from context (generateTagsResult ext)
@@ -243,12 +267,11 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
 
             // Parse blocks and tags from Custom rawInput
             auto inputMap = rawInput.requireCustom<AuditDataMap>(op);
-            using ProveKeys = ProofGenEngineContract::Env;
 
             ext->blocks = inputMap->getRequired<std::shared_ptr<CAMatrix::Audit::Data::AuditBlockSource>>(
-                std::string(ProveKeys::kBlocks));
+                std::string(StageKeys::kBlocks));
             ext->tags = inputMap->getRequired<std::shared_ptr<CAMatrix::Audit::Messages::Tags>>(
-                std::string(ProveKeys::kTags));
+                std::string(StageKeys::kTags));
 
             // Retrieve userPublicParams from context
             if (context.generateKeysResult) {
@@ -276,19 +299,6 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
             req->challenges = {context.generateChallengesResult->challenges};
             req->proves = {context.generateProofsResult->proves};
 
-            // The verify stage is handed the challenge session's two parameter
-            // slots (see ProofVerifyEngineContract::Frames): algorithm public
-            // parameters and user public parameters. This strategy verifies
-            // with pairings over the user public key only, so it consumes the
-            // session's user-parameter role and never the algorithm role. The
-            // role it relies on is pinned to the declared contract.
-            using VerifySlots = ProofVerifyEngineContract::Frames;
-            static_assert(VerifySlots::kUserPublicParamsKind ==
-                              CAMatrix::Audit::Core::AuditArtifactKind::UserPublicParams,
-                          "DHTDynamic verify consumes the user public parameter role");
-            static_assert(VerifySlots::kSlotCount == 2,
-                          "the challenge session hands the verify stage two parameter roles");
-
             // Retrieve userPublicParams from context
             if (context.generateKeysResult) {
                 ext->userPublicParams = std::dynamic_pointer_cast<DHTDynamicPublicParams>(
@@ -297,18 +307,15 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
 
             if (!ext->userPublicParams) {
                 throw std::runtime_error(
-                    "VerifyProofs requires the user-parameter role (slot " +
-                    std::to_string(VerifySlots::kUserPublicParamsSlot) +
-                    ") in context");
+                    "VerifyProofs requires the user-parameter role in context");
             }
 
             // Parse fileId from JSON rawInput
             const Json::Value root = rawInput.requireJson(op);
-            using VerifyKeys = ProofVerifyEngineContract::Env;
 
-            if (root.isMember(VerifyKeys::kFileId)) {
+            if (root.isMember(StageKeys::kFileId)) {
                 std::string parsed;
-                if (!RawInput::jsonValueToString(root[VerifyKeys::kFileId], parsed)) {
+                if (!RawInput::jsonValueToString(root[StageKeys::kFileId], parsed)) {
                     throw std::runtime_error("VerifyProofs 'fileId' must be string or byte array");
                 }
                 ext->fileId = parsed;
@@ -336,39 +343,38 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
             auto req = std::make_shared<MaintainRequest>();
             auto ext = std::make_shared<DHTDynamicMaintainExt>();
 
-            // Parse maintenance parameters from JSON rawInput. The keys come
-            // from the CoreLib stage contract (MaintenanceEngineContract::Env),
-            // which the first-party producers also write through.
+            // Parse maintenance parameters from JSON rawInput. The keys are the
+            // plugin-local stage keys, matching the wire strings the first-party
+            // producers (audit MaintainAuditUseCase, Bench) also write.
             const Json::Value root = rawInput.requireJson(op);
-            using MaintKeys = MaintenanceEngineContract::Env;
 
             // Extract fileId (required)
-            if (!root.isMember(MaintKeys::kFileId) || !root[MaintKeys::kFileId].isString()) {
+            if (!root.isMember(StageKeys::kFileId) || !root[StageKeys::kFileId].isString()) {
                 throw std::runtime_error(
-                    "Maintenance requires '" + std::string(MaintKeys::kFileId) + "' field");
+                    "Maintenance requires '" + std::string(StageKeys::kFileId) + "' field");
             }
-            ext->fileId = root[MaintKeys::kFileId].asString();
+            ext->fileId = root[StageKeys::kFileId].asString();
 
             // Extract opType (required)
-            if (!root.isMember(MaintKeys::kOpType) || !root[MaintKeys::kOpType].isUInt()) {
+            if (!root.isMember(StageKeys::kOpType) || !root[StageKeys::kOpType].isUInt()) {
                 throw std::runtime_error(
-                    "Maintenance requires '" + std::string(MaintKeys::kOpType) + "' field");
+                    "Maintenance requires '" + std::string(StageKeys::kOpType) + "' field");
             }
             ext->opType = static_cast<CAMatrix::Audit::Messages::MaintenanceOpType>(
-                root[MaintKeys::kOpType].asUInt());
+                root[StageKeys::kOpType].asUInt());
 
             // Extract blockIndices. Absence is tolerated as "no indices", but a
             // present value MUST be an array: reading a wrong-typed value as
             // "no indices" would silently drop the operation's scope, so it is
             // rejected here instead of being defaulted (the producers also
             // validate the stage shape before this call).
-            if (root.isMember(MaintKeys::kBlockIndices)) {
-                if (!root[MaintKeys::kBlockIndices].isArray()) {
+            if (root.isMember(StageKeys::kBlockIndices)) {
+                if (!root[StageKeys::kBlockIndices].isArray()) {
                     throw std::runtime_error(
-                        "Maintenance '" + std::string(MaintKeys::kBlockIndices) +
+                        "Maintenance '" + std::string(StageKeys::kBlockIndices) +
                         "' must be an array of block indices");
                 }
-                for (const auto& idx : root[MaintKeys::kBlockIndices]) {
+                for (const auto& idx : root[StageKeys::kBlockIndices]) {
                     ext->blockIndices.push_back(static_cast<std::size_t>(idx.asUInt64()));
                 }
             }

@@ -1259,23 +1259,17 @@ TEST(DhtDynamicSelector, SparseSelectionRegistersOnlySelectedBlocks)
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Every stage input is consumed under the CoreLib stage-contract keys
+// Every stage input is consumed under the producer's wire keys
 //
-// Contract under test: the plugin parses exactly the keys published by
-// GenerateTagsEngineContract / ChallengeGenEngineContract /
-// ProofGenEngineContract / ProofVerifyEngineContract, so a first-party
-// producer that writes those keys reaches the same stage input the plugin
+// Contract under test: the plugin owns its stage keys and parses exactly the
+// literal strings the first-party producers write (admin use cases, Bench), so
+// a producer that writes those keys reaches the same stage input the plugin
 // reads. Values are chosen so that a key the plugin failed to read changes the
 // observable outcome (no tags, default challenge count, empty file identity).
 // ═══════════════════════════════════════════════════════════════
 
-TEST(DhtDynamicEngineContract, DeclaredKeysDriveEveryStageInput)
+TEST(DhtDynamicStageKeys, ProducerWireKeysDriveEveryStageInput)
 {
-    using TagsKeys   = AuditMsg::GenerateTagsEngineContract::Env;
-    using ChalKeys   = AuditMsg::ChallengeGenEngineContract::Env;
-    using ProveKeys  = AuditMsg::ProofGenEngineContract::Env;
-    using VerifyKeys = AuditMsg::ProofVerifyEngineContract::Env;
-
     const std::string fileId = "dhtd-engine-contract";
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
     AuditCore::AuditOperationContext ctx;
@@ -1288,8 +1282,8 @@ TEST(DhtDynamicEngineContract, DeclaredKeysDriveEveryStageInput)
 
     // ── GenerateTags: blocks + fileId (userId is unread at this stage) ──
     auto tagsMap = std::make_shared<AuditMsg::AuditDataMap>();
-    tagsMap->emplace(std::string(TagsKeys::kBlocks), AuditData::AuditBlockSourcePtr(blocks));
-    tagsMap->emplace(std::string(TagsKeys::kFileId), std::string(fileId));
+    tagsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blocks));
+    tagsMap->emplace("fileId", std::string(fileId));
     engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
     ASSERT_TRUE(ctx.generateTagsResult.has_value());
     ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
@@ -1297,21 +1291,21 @@ TEST(DhtDynamicEngineContract, DeclaredKeysDriveEveryStageInput)
     EXPECT_EQ(stateStore->getBlockCount(fileId), blockCount);
 
     // ── ChallengeGen: fileId + challengeCount + usePseudoRandom + seed ──
-    // kBlockCount is deliberately left out: the strategy must then resolve the
-    // block count from the StateStore through kFileId, so a file identity that
+    // blockCount is deliberately left out: the strategy must then resolve the
+    // block count from the StateStore through fileId, so a file identity that
     // the plugin failed to read yields zero challenges instead of these two.
     ::Json::Value chalJson;
-    chalJson[ChalKeys::kFileId]          = fileId;
-    chalJson[ChalKeys::kChallengeCount]  = static_cast<::Json::UInt64>(2);
-    chalJson[ChalKeys::kUsePseudoRandom] = true;
-    chalJson[ChalKeys::kSeed]            = static_cast<::Json::UInt64>(42);
+    chalJson["fileId"]          = fileId;
+    chalJson["challengeCount"]  = static_cast<::Json::UInt64>(2);
+    chalJson["usePseudoRandom"] = true;
+    chalJson["seed"]            = static_cast<::Json::UInt64>(42);
     engine->generateChallenges(jsonInput(chalJson), ctx);
     ASSERT_TRUE(ctx.generateChallengesResult.has_value());
     auto challenges = std::dynamic_pointer_cast<DHTD::DHTDynamicChallenges>(
         ctx.generateChallengesResult->challenges);
     ASSERT_NE(challenges, nullptr);
     EXPECT_EQ(challenges->challengeCount(), 2u);
-    // Resolved from the StateStore via kFileId, not from the JSON body.
+    // Resolved from the StateStore via fileId, not from the JSON body.
     EXPECT_EQ(challenges->blockCount(), blockCount);
 
     // Same seed ⇒ same selection: proves the seed key reached the stage.
@@ -1332,19 +1326,19 @@ TEST(DhtDynamicEngineContract, DeclaredKeysDriveEveryStageInput)
     std::sort(firstIndices.begin(), firstIndices.end());
     std::sort(repeatedIndices.begin(), repeatedIndices.end());
     EXPECT_EQ(repeatedIndices, firstIndices)
-        << "kSeed did not reach the stage: equally seeded runs selected different blocks";
+        << "seed did not reach the stage: equally seeded runs selected different blocks";
 
     // ── ProofGen: blocks + tags ──
     auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
-    proofsMap->emplace(std::string(ProveKeys::kBlocks), AuditData::AuditBlockSourcePtr(blocks));
-    proofsMap->emplace(std::string(ProveKeys::kTags), AuditMsg::TagsPtr(ctx.generateTagsResult->tags));
+    proofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blocks));
+    proofsMap->emplace("tags", AuditMsg::TagsPtr(ctx.generateTagsResult->tags));
     engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
     ASSERT_TRUE(ctx.generateProofsResult.has_value());
     ASSERT_NE(ctx.generateProofsResult->proves, nullptr);
 
     // ── ProofVerify: fileId (userId is unread by this strategy) ──
     ::Json::Value verifyJson;
-    verifyJson[VerifyKeys::kFileId] = fileId;
+    verifyJson["fileId"] = fileId;
     engine->verifyProofs(jsonInput(verifyJson), ctx);
     ASSERT_TRUE(ctx.verifyProofsResult.has_value());
     EXPECT_TRUE(ctx.verifyProofsResult->ok) << "reason: " << ctx.verifyProofsResult->reason;

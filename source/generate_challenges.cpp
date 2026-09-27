@@ -84,16 +84,20 @@ DHTDynamicAuditStrategy::generateChallenges(
         return result;
     }
 
-    // ── Validate stateStore injection ──
-    if (!stateStore_) {
-        spdlog::warn("DHTDynamicAuditStrategy::generateChallenges: stateStore not injected");
+    // ── Validate the per-operation state store ──
+    // The state store travels on the request (copied from the operation
+    // context by createRequest). Without one there is no metadata to build
+    // challenges from, so degrade to an empty challenge set.
+    const auto& stateStore = ext->stateStore;
+    if (!stateStore) {
+        spdlog::warn("DHTDynamicAuditStrategy::generateChallenges: stateStore not provided in request");
         return result;
     }
 
     // ── Validate file exists in stateStore ──
     // generateTags() auto-registers files, but defend against callers that
     // skip that step — returning empty challenges is safer than crashing.
-    if (!stateStore_->hasFile(ext->fileId)) {
+    if (!stateStore->hasFile(ext->fileId)) {
         spdlog::warn("DHTDynamicAuditStrategy::generateChallenges: file '{}' not in stateStore",
                      ext->fileId);
         result.challenges = std::make_shared<DHTDynamicChallenges>();
@@ -109,7 +113,7 @@ DHTDynamicAuditStrategy::generateChallenges(
     // Priority: ext->blockCount > stateStore->getBlockCount(fileId)
     const std::size_t blockCount = ext->blockCount != 0
         ? ext->blockCount
-        : stateStore_->getBlockCount(ext->fileId);
+        : stateStore->getBlockCount(ext->fileId);
 
     spdlog::debug("DHTDynamicAuditStrategy::generateChallenges: fileId={} blockCount={} "
                   "challengeCount={} usePseudoRandom={} seed.has_value={}",
@@ -215,7 +219,7 @@ DHTDynamicAuditStrategy::generateChallenges(
 
     // ── Populate metadata from stateStore for each challenge item ──
     for (auto& item : items) {
-        auto metadata = stateStore_->getBlockMetadata(ext->fileId, item.blockIndex);
+        auto metadata = stateStore->getBlockMetadata(ext->fileId, item.blockIndex);
         auto dynMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(metadata);
         if (!dynMeta) {
             throw std::runtime_error("DHTDynamicAuditStrategy::generateChallenges: block " +

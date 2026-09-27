@@ -97,12 +97,15 @@ DHTDynamicAuditStrategy::maintenance(
         throw std::runtime_error("DHTDynamic maintenance: fileId is required");
     }
 
-    // ── Validate stateStore injection ──
-    if (!stateStore_) {
-        throw std::runtime_error("DHTDynamic maintenance: stateStore not injected");
+    // ── Validate the per-operation state store ──
+    // The state store travels on the request (copied from the operation
+    // context by createRequest); maintenance writes block metadata into it.
+    const auto& stateStore = ext->stateStore;
+    if (!stateStore) {
+        throw std::runtime_error("DHTDynamic maintenance: stateStore not provided in request");
     }
 
-    if (!stateStore_->hasFile(ext->fileId)) {
+    if (!stateStore->hasFile(ext->fileId)) {
         throw std::runtime_error("DHTDynamic maintenance: file '" + ext->fileId + "' not found in stateStore");
     }
 
@@ -142,9 +145,10 @@ DHTDynamicAuditStrategy::handleUpdate(
         throw std::runtime_error("DHTDynamic Update: blockIndices is required");
     }
 
+    const auto& stateStore = ext->stateStore;
     for (const auto blockIndex : ext->blockIndices) {
         // Validate block exists in stateStore
-        auto existingMeta = stateStore_->getBlockMetadata(ext->fileId, blockIndex);
+        auto existingMeta = stateStore->getBlockMetadata(ext->fileId, blockIndex);
         auto existingDhtMeta = std::dynamic_pointer_cast<::CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(existingMeta);
         if (!existingDhtMeta) {
             throw std::runtime_error(
@@ -154,7 +158,7 @@ DHTDynamicAuditStrategy::handleUpdate(
 
         // Bump metadata: modifyBlock reads current metadata, calls bump()
         // which increments version and refreshes timestamp.
-        stateStore_->modifyBlock(ext->fileId, blockIndex);
+        stateStore->modifyBlock(ext->fileId, blockIndex);
 
         spdlog::debug("DHTDynamic Update: block {} version bumped for file '{}'",
                        blockIndex, ext->fileId);
@@ -177,9 +181,10 @@ DHTDynamicAuditStrategy::handleInsert(
         throw std::runtime_error("DHTDynamic Insert: blockIndices is required");
     }
 
+    const auto& stateStore = ext->stateStore;
     for (const auto blockIndex : ext->blockIndices) {
         // Insert BlockMetadata into stateStore (internally creates default metadata via factory)
-        stateStore_->insertBlock(ext->fileId, blockIndex);
+        stateStore->insertBlock(ext->fileId, blockIndex);
 
         spdlog::debug("DHTDynamic Insert: block {} metadata inserted for file '{}'",
                        blockIndex, ext->fileId);
@@ -202,9 +207,10 @@ DHTDynamicAuditStrategy::handleDelete(
         throw std::runtime_error("DHTDynamic Delete: blockIndices is required");
     }
 
+    const auto& stateStore = ext->stateStore;
     for (const auto& blockIndex : ext->blockIndices) {
         // Delete BlockMetadata from stateStore
-        stateStore_->deleteBlock(ext->fileId, blockIndex);
+        stateStore->deleteBlock(ext->fileId, blockIndex);
 
         spdlog::debug("DHTDynamic Delete: block {} removed from stateStore for file '{}'",
                        blockIndex, ext->fileId);

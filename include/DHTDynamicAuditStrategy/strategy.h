@@ -70,8 +70,11 @@ namespace CAMatrix::Audit::Strategies {
  * @class DHTDynamicAuditStrategy
  * @brief DHT-based dynamic PDP implementation
  * @details State maintenance party is TPA (Third-Party Auditor).
- *          StateStore must be injected via setStateStore() before calling
- *          maintenance() or any operation that depends on DHT state.
+ *          The StateStore travels per operation: callers set it on the
+ *          AuditOperationContext, and createRequest() copies it into the tag,
+ *          challenge and maintenance request extensions. Tag generation and
+ *          maintenance require it; challenge generation degrades to an empty
+ *          challenge set when it is absent.
  */
 class DHTDynamicAuditStrategy : public ::CAMatrix::Audit::Core::DynamicAuditStrategy {
 public:

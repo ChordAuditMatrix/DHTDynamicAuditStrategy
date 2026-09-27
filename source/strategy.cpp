@@ -145,6 +145,10 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
             auto req = std::make_shared<GenerateTagsRequest>();
             auto ext = std::make_shared<DHTDynamicTagsGenRequestExt>();
 
+            // Carry the per-operation state store from the context: tag
+            // generation registers/reads block metadata from it.
+            ext->stateStore = context.stateStore;
+
             // Retrieve generateKeys result from context
             if (!context.generateKeysResult) {
                 throw std::runtime_error("GenerateTags requires generateKeys result in context");
@@ -198,6 +202,10 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
         case AuditOperation::ChallengeGen: {
             auto req = std::make_shared<GenerateChallengesRequest>();
             auto ext = std::make_shared<DHTDynamicChallengeRequestExt>();
+
+            // Carry the per-operation state store from the context: challenge
+            // generation reads block metadata (and the block count) from it.
+            ext->stateStore = context.stateStore;
 
             // Parse challenge parameters from JSON rawInput
             const Json::Value root = rawInput.requireJson(op);
@@ -342,6 +350,10 @@ CAMatrix::Audit::Messages::AuditRequestVariantPtr DHTDynamicAuditStrategy::creat
             // caller's responsibility (generateTags() → Storage).
             auto req = std::make_shared<MaintainRequest>();
             auto ext = std::make_shared<DHTDynamicMaintainExt>();
+
+            // Carry the per-operation state store from the context: maintenance
+            // updates block metadata in it.
+            ext->stateStore = context.stateStore;
 
             // Parse maintenance parameters from JSON rawInput. The keys are the
             // plugin-local stage keys, matching the wire strings the first-party

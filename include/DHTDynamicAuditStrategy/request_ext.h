@@ -47,6 +47,10 @@
 #include <string>
 #include <vector>
 
+namespace CAMatrix::Audit::Core {
+class DynamicPdpStateStore;
+} // namespace CAMatrix::Audit::Core
+
 namespace CAMatrix::Audit::Strategies::DHTDynamic {
 
 using AuditBlockSource = ::CAMatrix::Audit::Data::AuditBlockSource;
@@ -109,6 +113,8 @@ struct DHTDynamicTagsGenRequestExt final : public ::CAMatrix::Audit::Messages::S
     std::shared_ptr<DHTDynamicPublicParams> userPublicParams;
     /** @brief User private parameters (sk, a) */
     std::shared_ptr<DHTDynamicPrivateParams> userPrivateParams;
+    /** @brief Per-operation state store copied from the operation context (may be null) */
+    std::shared_ptr<::CAMatrix::Audit::Core::DynamicPdpStateStore> stateStore;
 
     DHTDynamicTagsGenRequestExt() = default;
 };
@@ -144,6 +150,8 @@ struct DHTDynamicChallengeRequestExt final : public ::CAMatrix::Audit::Messages:
     bool usePseudoRandom = true;
     /** @brief Optional RNG seed (only valid if usePseudoRandom is true) */
     std::optional<std::uint64_t> seed;
+    /** @brief Per-operation state store copied from the operation context (may be null) */
+    std::shared_ptr<::CAMatrix::Audit::Core::DynamicPdpStateStore> stateStore;
 
     DHTDynamicChallengeRequestExt() = default;
 };

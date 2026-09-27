@@ -12,12 +12,17 @@ cmake_minimum_required(VERSION 3.16)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/CoreLib/.cmake/cam_add_gtest.cmake)
 
 # Include roots:
-#   - CoreLib headers (ChordAuditMatrixLib/...)
 #   - Strategy headers  (DHTDynamicAuditStrategy/...)
+#   - CoreLib headers (ChordAuditMatrixLib/...): in-tree builds resolve these
+#     through the canonical CoreLib target (lib/include). Standalone builds have
+#     only the nested CoreLib checkout, so its include root is added there —
+#     never in-tree, where it would shadow the canonical headers.
 set(DHT_TEST_INCLUDE_DIRS
-    ${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/CoreLib/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
+if(CAM_STANDALONE)
+    list(APPEND DHT_TEST_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/CoreLib/include)
+endif()
 
 # ── Full pipeline integration ──
 cam_add_gtest(test_dht_dynamic_full_integration
@@ -43,9 +48,9 @@ cam_add_gtest(test_dynamic_hash_table_state_store_unit
     LABELS "DHTDynamicTests;scope:unit;purpose:regression"
 )
 
-# ── Engine state store lifecycle ──
-cam_add_gtest(test_state_store_lifecycle_unit
-    SOURCES test_state_store_lifecycle_unit.cpp
+# ── Engine per-operation strategy/StateStore state ──
+cam_add_gtest(test_engine_operation_state_unit
+    SOURCES test_engine_operation_state_unit.cpp
     LINK_LIBS DHTDynamicAuditStrategy
     INCLUDE_DIRS ${DHT_TEST_INCLUDE_DIRS}
     LABELS "DHTDynamicTests;scope:unit;purpose:regression"

@@ -35,9 +35,14 @@
 #include "ChordAuditMatrixLib/interfaces/audit/messages/request_result.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace CAMatrix::Audit::Core {
+class DynamicPdpStateStore;
+} // namespace CAMatrix::Audit::Core
 
 namespace CAMatrix::Audit::Strategies::DHTDynamic {
 
@@ -64,7 +69,14 @@ struct DHTDynamicMaintainExt final : public ::CAMatrix::Audit::Messages::StageEx
     /** @brief Block indices affected by this operation */
     std::vector<std::size_t> blockIndices;
 
+    /** @brief Per-operation state store copied from the operation context (may be null).
+     *  @details Transient dependency: never serialized, it is re-bound from the
+     *           operation context by createRequest() on every engine call. */
+    std::shared_ptr<::CAMatrix::Audit::Core::DynamicPdpStateStore> stateStore;
+
     // ── CryptoSerializable overrides ──
+    // stateStore is intentionally NOT serialized: it is a per-operation
+    // dependency, not part of the maintenance wire payload.
     void do_serialize(cereal::BinaryOutputArchive& ar) const override {
         ar(fileId);
         ar(static_cast<std::uint8_t>(opType));

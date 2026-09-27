@@ -24,8 +24,7 @@
  *
  *          The mock records all method invocations (method name + arguments)
  *          so tests can assert on call ordering, argument correctness, and
- *          call counts — without depending on DynamicHashTableStateStore
- *          or any real storage backend.
+ *          call counts — without depending on a real storage backend.
  *
  * Test Intent Summary:
  * - Verify generateChallenges calls getBlockCount + getBlockMetadata per block.
@@ -33,7 +32,7 @@
  *   version+1 and updated timestamp.
  * - Verify maintenance Insert calls insertBlock with version=1 metadata.
  * - Verify maintenance Delete calls deleteBlock.
- * - Verify strategy rejects operations when stateStore is not injected.
+ * - Verify strategy rejects operations when the request carries no stateStore.
  * - Verify strategy rejects maintenance when file does not exist in stateStore.
  * - Verify getBlockMetadata arguments use 1-based blockIndex convention.
  *
@@ -51,7 +50,6 @@
 #include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 #include "DHTDynamicAuditStrategy/maintain_types.h"
 #include "DHTDynamicAuditStrategy/request_ext.h"
-#include "DHTDynamicAuditStrategy/state_stores/dynamic_hash_table_state_store.h"
 
 // ── Interface types ──
 #include "ChordAuditMatrixLib/interfaces/audit/dynamic_strategy.h"
@@ -290,21 +288,17 @@ private:
     std::uint64_t version_ = 1;
 };
 
-/// Create a strategy with `mock` as its stateStore.
-std::shared_ptr<AuditStrat::DHTDynamicAuditStrategy>
-createStrategyWithMock(const std::shared_ptr<MockDynamicPdpStateStore> &mock)
+/// Create a DHTDynamic strategy. The state store travels per request (on the
+/// request extension) instead of being attached to the strategy.
+std::shared_ptr<AuditStrat::DHTDynamicAuditStrategy> createStrategy()
 {
-    auto strategy = std::make_shared<AuditStrat::DHTDynamicAuditStrategy>();
-    strategy->setStateStore(mock);
-    return strategy;
+    return std::make_shared<AuditStrat::DHTDynamicAuditStrategy>();
 }
 
 /// Generate a real DHTDynamicPublicParams via a real stateStore-backed strategy.
 std::shared_ptr<DHTD::DHTDynamicPublicParams> generateRealPublicParams(std::uint64_t seed)
 {
-    auto realStore = std::make_shared<DHTD::DynamicHashTableStateStore>();
     auto realStrategy = std::make_shared<AuditStrat::DHTDynamicAuditStrategy>();
-    realStrategy->setStateStore(realStore);
 
     AuditMsg::InitializeAlgorithmRequest initReq;
     initReq.ext = std::make_shared<DHTD::DHTDynamicAlgoInitRequestExt>();
@@ -318,13 +312,16 @@ std::shared_ptr<DHTD::DHTDynamicPublicParams> generateRealPublicParams(std::uint
     return std::dynamic_pointer_cast<DHTD::DHTDynamicPublicParams>(keyRes.publicParams);
 }
 
-/// Build a MaintainRequest with the given op + block indices.
+/// Build a MaintainRequest with the given op + block indices, carrying
+/// `stateStore` on the request extension (the per-operation dependency).
 AuditMsg::MaintainRequest buildMaintainRequest(
+    const std::shared_ptr<AuditCore::DynamicPdpStateStore> &stateStore,
     const std::string &fileId, AuditMsg::MaintenanceOpType op,
     const std::vector<std::size_t> &blockIndices)
 {
     AuditMsg::MaintainRequest req;
     auto ext = std::make_shared<DHTD::DHTDynamicMaintainExt>();
+    ext->stateStore = stateStore;
     ext->fileId = fileId;
     ext->opType = op;
     ext->blockIndices = blockIndices;
@@ -369,7 +366,7 @@ TEST(DhtDynamicGenerateChallenges, QueriesBlockMetadataPerChallengeItem)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>();
     mock->addFileWithBlocks("f1", 3);
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     AuditMsg::GenerateChallengesRequest req;
     auto ext = std::make_shared<DHTD::DHTDynamicChallengeRequestExt>();
@@ -380,6 +377,7 @@ TEST(DhtDynamicGenerateChallenges, QueriesBlockMetadataPerChallengeItem)
     ext->seed = 42;
     ext->userPublicParams = generateRealPublicParams(12345);
     ASSERT_NE(ext->userPublicParams, nullptr);
+    ext->stateStore = mock;
     req.ext = ext;
 
     mock->reset();
@@ -411,7 +409,7 @@ TEST(DhtDynamicGenerateChallenges, FallsBackToGetBlockCountWhenBlockCountIsZero)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>();
     mock->addFileWithBlocks("f1", 5);
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     AuditMsg::GenerateChallengesRequest req;
     auto ext = std::make_shared<DHTD::DHTDynamicChallengeRequestExt>();
@@ -422,6 +420,7 @@ TEST(DhtDynamicGenerateChallenges, FallsBackToGetBlockCountWhenBlockCountIsZero)
     ext->seed = 42;
     ext->userPublicParams = generateRealPublicParams(99999);
     ASSERT_NE(ext->userPublicParams, nullptr);
+    ext->stateStore = mock;
     req.ext = ext;
 
     mock->reset();
@@ -444,10 +443,10 @@ TEST(DhtDynamicMaintenanceUpdate, ReadsThenModifiesBlockWithBumpedVersion)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>();
     mock->addFileWithBlocks("f1", 2, /*startVersion=*/3, /*startTimestamp=*/100);
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     mock->reset();
-    strategy->maintenance(buildMaintainRequest("f1", AuditMsg::MaintenanceOpType::Update, {2}));
+    strategy->maintenance(buildMaintainRequest(mock, "f1", AuditMsg::MaintenanceOpType::Update, {2}));
 
     EXPECT_EQ(mock->countCalls("getBlockMetadata"), 1u);
     const auto *getCall = mock->findCall("getBlockMetadata", 0);
@@ -470,10 +469,10 @@ TEST(DhtDynamicMaintenanceUpdate, HandlesMultipleBlocksInOrder)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>();
     mock->addFileWithBlocks("f1", 4);
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     mock->reset();
-    strategy->maintenance(buildMaintainRequest("f1", AuditMsg::MaintenanceOpType::Update, {1, 3}));
+    strategy->maintenance(buildMaintainRequest(mock, "f1", AuditMsg::MaintenanceOpType::Update, {1, 3}));
 
     EXPECT_EQ(mock->countCalls("getBlockMetadata"), 2u);
     EXPECT_EQ(mock->countCalls("modifyBlock"), 2u);
@@ -494,10 +493,10 @@ TEST(DhtDynamicMaintenanceUpdate, BumpsVersionFromFiveToSix)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>();
     mock->addFileWithBlocks("f1", 1, /*startVersion=*/5, /*startTimestamp=*/500);
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     mock->reset();
-    strategy->maintenance(buildMaintainRequest("f1", AuditMsg::MaintenanceOpType::Update, {1}));
+    strategy->maintenance(buildMaintainRequest(mock, "f1", AuditMsg::MaintenanceOpType::Update, {1}));
 
     const auto *call = mock->findCall("modifyBlock", 0);
     ASSERT_NE(call, nullptr);
@@ -515,10 +514,10 @@ TEST(DhtDynamicMaintenanceInsert, CallsInsertBlockWithVersionOne)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>();
     mock->addFileWithBlocks("f1", 2);
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     mock->reset();
-    strategy->maintenance(buildMaintainRequest("f1", AuditMsg::MaintenanceOpType::Insert, {3}));
+    strategy->maintenance(buildMaintainRequest(mock, "f1", AuditMsg::MaintenanceOpType::Insert, {3}));
 
     EXPECT_EQ(mock->countCalls("insertBlock"), 1u);
     const auto *call = mock->findCall("insertBlock", 0);
@@ -539,10 +538,10 @@ TEST(DhtDynamicMaintenanceDelete, CallsDeleteBlockOnly)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>();
     mock->addFileWithBlocks("f1", 3);
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     mock->reset();
-    strategy->maintenance(buildMaintainRequest("f1", AuditMsg::MaintenanceOpType::Delete, {2}));
+    strategy->maintenance(buildMaintainRequest(mock, "f1", AuditMsg::MaintenanceOpType::Delete, {2}));
 
     EXPECT_EQ(mock->countCalls("deleteBlock"), 1u);
     const auto *call = mock->findCall("deleteBlock", 0);
@@ -561,10 +560,10 @@ TEST(DhtDynamicMaintenanceDelete, HandlesMultipleBlocksInOrder)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>();
     mock->addFileWithBlocks("f1", 5);
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     mock->reset();
-    strategy->maintenance(buildMaintainRequest("f1", AuditMsg::MaintenanceOpType::Delete, {1, 3, 5}));
+    strategy->maintenance(buildMaintainRequest(mock, "f1", AuditMsg::MaintenanceOpType::Delete, {1, 3, 5}));
 
     EXPECT_EQ(mock->countCalls("deleteBlock"), 3u);
     const std::size_t expected[3] = {1, 3, 5};
@@ -579,14 +578,14 @@ TEST(DhtDynamicMaintenanceDelete, HandlesMultipleBlocksInOrder)
 // Error paths
 // ============================================================================
 
-/// maintenance without stateStore injected must throw std::runtime_error
+/// maintenance whose request carries no stateStore must throw std::runtime_error
 /// whose message mentions "stateStore".
 TEST(DhtDynamicMaintenanceErrors, ThrowsWithoutStateStore)
 {
     auto strategy = std::make_shared<AuditStrat::DHTDynamicAuditStrategy>();
-    // Deliberately not calling setStateStore.
+    // Deliberately leaving ext->stateStore null (passed as nullptr below).
     EXPECT_TRUE(throwsRuntimeErrorContaining(
-        [&] { strategy->maintenance(buildMaintainRequest("f1", AuditMsg::MaintenanceOpType::Update, {1})); },
+        [&] { strategy->maintenance(buildMaintainRequest(nullptr, "f1", AuditMsg::MaintenanceOpType::Update, {1})); },
         "stateStore"));
 }
 
@@ -595,9 +594,9 @@ TEST(DhtDynamicMaintenanceErrors, ThrowsWithoutStateStore)
 TEST(DhtDynamicMaintenanceErrors, ThrowsWhenFileNotInStateStore)
 {
     auto mock = std::make_shared<MockDynamicPdpStateStore>(); // no files
-    auto strategy = createStrategyWithMock(mock);
+    auto strategy = createStrategy();
 
     EXPECT_TRUE(throwsRuntimeErrorContaining(
-        [&] { strategy->maintenance(buildMaintainRequest("nonexistent", AuditMsg::MaintenanceOpType::Update, {1})); },
+        [&] { strategy->maintenance(buildMaintainRequest(mock, "nonexistent", AuditMsg::MaintenanceOpType::Update, {1})); },
         "not found"));
 }

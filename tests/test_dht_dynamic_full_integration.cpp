@@ -26,18 +26,18 @@
  *          Key differences from SM9 static:
  *          - Init is a no-op (no KGC)
  *          - KeyGen uses optional seed for deterministic testing
- *          - Challenge generation requires StateStore injection
+ *          - Challenge generation requires a StateStore on the operation context
  *          - Verify checks Θ == Λ (aggregate pairing, no individual BLS)
  *          - Maintenance operations modify StateStore
  *
  * Test Intent Summary:
  * - Validate DHTDynamic full workflow via Engine: init → keygen → tags →
- *   challenges → proofs → verify (with StateStore injection).
+ *   challenges → proofs → verify (StateStore carried on the operation context).
  * - Validate tamper detection by mutating proof material.
  * - Validate StateStore operations (addFile, getBlockMetadata, getBlockCount).
  * - Validate maintenance operations (Update, Insert, Delete).
  * - Validate serialization/deserialization roundtrip for all Result types.
- * - Validate AuditEngine::createArtifact() for all DHTDynamic artifact types.
+ * - Validate engine.createArtifact(strategy, kind) for all DHTDynamic artifact types.
  *
  * @author Dylan Liu
  * @version 1.0.0
@@ -138,15 +138,32 @@ makeRandomBlockSource(std::uint32_t seed = 0, std::size_t size = 96, std::size_t
     return packer;  // packer IS the AuditBlockSource
 }
 
-/// Create a fresh Engine instance with DHTDynamic strategy and inject StateStore.
-static std::shared_ptr<AuditCore::AuditEngine> createDhtDynamicEngine(
+/// Bundles the stateless engine with the per-operation dependencies
+/// (strategy + StateStore) that callers bind onto every AuditOperationContext.
+struct DhtDynamicHarness {
+    std::shared_ptr<AuditCore::AuditEngine> engine;
+    std::shared_ptr<AuditStrat::DHTDynamicAuditStrategy> strategy;
+    std::shared_ptr<AuditStrat::DHTDynamic::DynamicHashTableStateStore> stateStore;
+
+    /// Fresh operation context bound to this harness's strategy + StateStore.
+    AuditCore::AuditOperationContext context() const
+    {
+        AuditCore::AuditOperationContext ctx;
+        ctx.strategy = strategy;
+        ctx.stateStore = stateStore;
+        return ctx;
+    }
+};
+
+/// Create a fresh engine + DHTDynamic strategy over `stateStore`.
+static DhtDynamicHarness createDhtDynamicHarness(
     const std::shared_ptr<AuditStrat::DHTDynamic::DynamicHashTableStateStore>& stateStore)
 {
-    auto engine = AuditCore::AuditEngineFactory::createInstance();
-    auto strategy = std::make_shared<AuditStrat::DHTDynamicAuditStrategy>();
-    strategy->setStateStore(stateStore);
-    engine->setStrategy(strategy);
-    return engine;
+    DhtDynamicHarness harness;
+    harness.engine = AuditCore::AuditEngineFactory::createInstance();
+    harness.strategy = std::make_shared<AuditStrat::DHTDynamicAuditStrategy>();
+    harness.stateStore = stateStore;
+    return harness;
 }
 
 /// Helper: write a Json::Value to string.
@@ -201,17 +218,17 @@ void expectSerializationRoundtrip(const T &original)
 TEST(DhtDynamicFull, ArtifactCreation)
 {
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
-    auto engine = createDhtDynamicEngine(stateStore);
+    auto harness = createDhtDynamicHarness(stateStore);
 
     // Challenges
-    auto chalVar = engine->createArtifact(AuditCore::AuditArtifactKind::Challenges);
+    auto chalVar = harness.engine->createArtifact(harness.strategy, AuditCore::AuditArtifactKind::Challenges);
     auto chalPtr = std::get_if<AuditMsg::ChallengesPtr>(&chalVar);
     ASSERT_NE(chalPtr, nullptr);
     ASSERT_NE(*chalPtr, nullptr);
     EXPECT_NE(std::dynamic_pointer_cast<DHTD::DHTDynamicChallenges>(*chalPtr), nullptr);
 
     // Proves
-    auto provVar = engine->createArtifact(AuditCore::AuditArtifactKind::Proves);
+    auto provVar = harness.engine->createArtifact(harness.strategy, AuditCore::AuditArtifactKind::Proves);
     auto provPtr = std::get_if<AuditMsg::ProvesPtr>(&provVar);
     ASSERT_NE(provPtr, nullptr);
     ASSERT_NE(*provPtr, nullptr);
@@ -224,33 +241,33 @@ TEST(DhtDynamicFull, ArtifactCreation)
     EXPECT_TRUE(tags->empty());
 
     // Individual Tag
-    auto tVar = engine->createArtifact(AuditCore::AuditArtifactKind::Tag);
+    auto tVar = harness.engine->createArtifact(harness.strategy, AuditCore::AuditArtifactKind::Tag);
     auto tagPtr = std::get_if<AuditMsg::TagPtr>(&tVar);
     ASSERT_NE(tagPtr, nullptr);
     ASSERT_NE(*tagPtr, nullptr);
     EXPECT_NE(std::dynamic_pointer_cast<DHTD::DHTDynamicTag>(*tagPtr), nullptr);
 
     // Algorithm public/private params (no-op init → empty DHTDynamicAlgoPublicParams)
-    auto algoPubVar = engine->createArtifact(AuditCore::AuditArtifactKind::AlgorithmPublicParams);
+    auto algoPubVar = harness.engine->createArtifact(harness.strategy, AuditCore::AuditArtifactKind::AlgorithmPublicParams);
     auto algoPubPtr = std::get_if<std::shared_ptr<AuditMsg::AlgoPublicParams>>(&algoPubVar);
     ASSERT_NE(algoPubPtr, nullptr);
     ASSERT_NE(*algoPubPtr, nullptr);
     EXPECT_NE(std::dynamic_pointer_cast<DHTD::DHTDynamicAlgoPublicParams>(*algoPubPtr), nullptr);
 
-    auto algoPrivVar = engine->createArtifact(AuditCore::AuditArtifactKind::AlgorithmPrivateParams);
+    auto algoPrivVar = harness.engine->createArtifact(harness.strategy, AuditCore::AuditArtifactKind::AlgorithmPrivateParams);
     auto algoPrivPtr = std::get_if<std::shared_ptr<AuditMsg::AlgoPrivateParams>>(&algoPrivVar);
     ASSERT_NE(algoPrivPtr, nullptr);
     ASSERT_NE(*algoPrivPtr, nullptr);
     EXPECT_NE(std::dynamic_pointer_cast<DHTD::DHTDynamicAlgoPrivateParams>(*algoPrivPtr), nullptr);
 
     // User public/private params (from KeyGen → DHTDynamicPublicParams / DHTDynamicPrivateParams)
-    auto userPubVar = engine->createArtifact(AuditCore::AuditArtifactKind::UserPublicParams);
+    auto userPubVar = harness.engine->createArtifact(harness.strategy, AuditCore::AuditArtifactKind::UserPublicParams);
     auto userPubPtr = std::get_if<std::shared_ptr<AuditMsg::AlgoPublicParams>>(&userPubVar);
     ASSERT_NE(userPubPtr, nullptr);
     ASSERT_NE(*userPubPtr, nullptr);
     EXPECT_NE(std::dynamic_pointer_cast<DHTD::DHTDynamicPublicParams>(*userPubPtr), nullptr);
 
-    auto userPrivVar = engine->createArtifact(AuditCore::AuditArtifactKind::UserPrivateParams);
+    auto userPrivVar = harness.engine->createArtifact(harness.strategy, AuditCore::AuditArtifactKind::UserPrivateParams);
     auto userPrivPtr = std::get_if<std::shared_ptr<AuditMsg::AlgoPrivateParams>>(&userPrivVar);
     ASSERT_NE(userPrivPtr, nullptr);
     ASSERT_NE(*userPrivPtr, nullptr);
@@ -264,11 +281,11 @@ TEST(DhtDynamicFull, ArtifactCreation)
 TEST(DhtDynamicFull, InitKeygenAndSerialization)
 {
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
-    auto engine = createDhtDynamicEngine(stateStore);
-    AuditCore::AuditOperationContext ctx;
+    auto harness = createDhtDynamicHarness(stateStore);
+    auto ctx = harness.context();
 
     // Init — empty RawInput (no-op for DHTDynamic)
-    engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
+    harness.engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
     ASSERT_TRUE(ctx.initializeAlgorithmResult.has_value());
     EXPECT_TRUE(ctx.initializeAlgorithmResult->ok);
     EXPECT_NE(ctx.initializeAlgorithmResult->publicParams, nullptr);
@@ -282,7 +299,7 @@ TEST(DhtDynamicFull, InitKeygenAndSerialization)
     // KeyGen — JSON with optional seed for deterministic testing.
     ::Json::Value keyJson;
     keyJson["seed"] = static_cast<::Json::UInt64>(42);
-    engine->generateKeys(jsonInput(keyJson), ctx);
+    harness.engine->generateKeys(jsonInput(keyJson), ctx);
     ASSERT_TRUE(ctx.generateKeysResult.has_value());
     EXPECT_TRUE(ctx.generateKeysResult->ok);
     EXPECT_NE(ctx.generateKeysResult->publicParams, nullptr);
@@ -300,7 +317,7 @@ TEST(DhtDynamicFull, InitKeygenAndSerialization)
     const auto keyPubSerialized = ctx.generateKeysResult->publicParams->serialize();
     EXPECT_FALSE(keyPubSerialized.empty());
 
-    auto restoredVar = engine->createArtifact(AuditCore::AuditArtifactKind::UserPublicParams);
+    auto restoredVar = harness.engine->createArtifact(harness.strategy, AuditCore::AuditArtifactKind::UserPublicParams);
     auto *ptr = std::get_if<std::shared_ptr<AuditMsg::AlgoPublicParams>>(&restoredVar);
     ASSERT_NE(ptr, nullptr);
     EXPECT_TRUE((*ptr)->deserialize(keyPubSerialized));
@@ -317,18 +334,18 @@ TEST(DhtDynamicFull, FullPipelineSuccess)
     const std::size_t blockSize  = 256;
 
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
-    auto engine = createDhtDynamicEngine(stateStore);
-    AuditCore::AuditOperationContext ctx;
+    auto harness = createDhtDynamicHarness(stateStore);
+    auto ctx = harness.context();
 
     // ── Step 1: Initialize algorithm (no-op) ──
-    engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
+    harness.engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
     ASSERT_TRUE(ctx.initializeAlgorithmResult.has_value());
     ASSERT_TRUE(ctx.initializeAlgorithmResult->ok);
 
     // ── Step 2: Generate keys ──
     ::Json::Value keyJson;
     keyJson["seed"] = static_cast<::Json::UInt64>(42);
-    engine->generateKeys(jsonInput(keyJson), ctx);
+    harness.engine->generateKeys(jsonInput(keyJson), ctx);
     ASSERT_TRUE(ctx.generateKeysResult.has_value());
     ASSERT_TRUE(ctx.generateKeysResult->ok);
 
@@ -359,7 +376,7 @@ TEST(DhtDynamicFull, FullPipelineSuccess)
     auto tagsDataMap = std::make_shared<AuditMsg::AuditDataMap>();
     tagsDataMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blockSource));
     tagsDataMap->emplace("fileId", std::string(testFileId));
-    engine->generateTags(AuditMsg::RawInput(tagsDataMap), ctx);
+    harness.engine->generateTags(AuditMsg::RawInput(tagsDataMap), ctx);
     ASSERT_TRUE(ctx.generateTagsResult.has_value());
     ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
     EXPECT_EQ(ctx.generateTagsResult->tags->maxIndex(), blockCount);
@@ -371,7 +388,7 @@ TEST(DhtDynamicFull, FullPipelineSuccess)
     chalJson["challengeCount"]  = static_cast<::Json::UInt64>(2);
     chalJson["usePseudoRandom"] = true;
     chalJson["seed"]            = static_cast<::Json::UInt64>(42);
-    engine->generateChallenges(jsonInput(chalJson), ctx);
+    harness.engine->generateChallenges(jsonInput(chalJson), ctx);
     ASSERT_TRUE(ctx.generateChallengesResult.has_value());
     ASSERT_NE(ctx.generateChallengesResult->challenges, nullptr);
 
@@ -385,7 +402,7 @@ TEST(DhtDynamicFull, FullPipelineSuccess)
     auto proofsDataMap = std::make_shared<AuditMsg::AuditDataMap>();
     proofsDataMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blockSource));
     proofsDataMap->emplace("tags", AuditMsg::TagsPtr(ctx.generateTagsResult->tags));
-    engine->generateProofs(AuditMsg::RawInput(proofsDataMap), ctx);
+    harness.engine->generateProofs(AuditMsg::RawInput(proofsDataMap), ctx);
     ASSERT_TRUE(ctx.generateProofsResult.has_value());
     ASSERT_NE(ctx.generateProofsResult->proves, nullptr);
     EXPECT_NE(std::dynamic_pointer_cast<DHTD::DHTDynamicProves>(
@@ -396,7 +413,7 @@ TEST(DhtDynamicFull, FullPipelineSuccess)
     // DHTDynamic verify: Θ == Λ (aggregate pairing, no individual BLS verification)
     ::Json::Value verifyJson;
     verifyJson["fileId"] = testFileId;
-    engine->verifyProofs(jsonInput(verifyJson), ctx);
+    harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
     ASSERT_TRUE(ctx.verifyProofsResult.has_value());
     EXPECT_TRUE(ctx.verifyProofsResult->ok) << "reason: " << ctx.verifyProofsResult->reason;
 }
@@ -410,16 +427,16 @@ TEST(DhtDynamicFull, TamperDetection)
     const std::string testFileId = "file-dht-tamper-001";
 
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
-    auto engine = createDhtDynamicEngine(stateStore);
-    AuditCore::AuditOperationContext ctx;
+    auto harness = createDhtDynamicHarness(stateStore);
+    auto ctx = harness.context();
 
     // ── Run full pipeline via Engine ──
-    engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
+    harness.engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
     ASSERT_TRUE(ctx.initializeAlgorithmResult->ok);
 
     ::Json::Value keyJson;
     keyJson["seed"] = static_cast<::Json::UInt64>(20260708);
-    engine->generateKeys(jsonInput(keyJson), ctx);
+    harness.engine->generateKeys(jsonInput(keyJson), ctx);
     ASSERT_TRUE(ctx.generateKeysResult->ok);
 
     auto blocks = makeRandomBlockSource(20260708, 96, 16);
@@ -435,7 +452,7 @@ TEST(DhtDynamicFull, TamperDetection)
     auto tagsMap = std::make_shared<AuditMsg::AuditDataMap>();
     tagsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blocks));
     tagsMap->emplace("fileId", std::string(testFileId));
-    engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
+    harness.engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
     ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
 
     ::Json::Value chalJson;
@@ -444,19 +461,19 @@ TEST(DhtDynamicFull, TamperDetection)
     chalJson["challengeCount"]  = static_cast<::Json::UInt64>(3);
     chalJson["usePseudoRandom"] = true;
     chalJson["seed"]            = static_cast<::Json::UInt64>(20260708);
-    engine->generateChallenges(jsonInput(chalJson), ctx);
+    harness.engine->generateChallenges(jsonInput(chalJson), ctx);
     ASSERT_NE(ctx.generateChallengesResult->challenges, nullptr);
 
     auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
     proofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blocks));
     proofsMap->emplace("tags", AuditMsg::TagsPtr(ctx.generateTagsResult->tags));
-    engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
+    harness.engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
     ASSERT_NE(ctx.generateProofsResult->proves, nullptr);
 
     // ── Step 1: Verify original proof — should succeed ──
     ::Json::Value verifyJson;
     verifyJson["fileId"] = testFileId;
-    engine->verifyProofs(jsonInput(verifyJson), ctx);
+    harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
     ASSERT_TRUE(ctx.verifyProofsResult->ok);
 
     // ── Step 2: Tamper with the proof in context, then re-verify ──
@@ -476,7 +493,7 @@ TEST(DhtDynamicFull, TamperDetection)
     proves->setTheta(tamperedTheta);
 
     // Re-verify via Engine — reads tampered proof from context
-    engine->verifyProofs(jsonInput(verifyJson), ctx);
+    harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
     EXPECT_FALSE(ctx.verifyProofsResult->ok);
 }
 
@@ -546,16 +563,16 @@ TEST(DhtDynamicFull, MaintenanceOperations)
     const std::size_t blockSize  = 256;
 
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
-    auto engine = createDhtDynamicEngine(stateStore);
-    AuditCore::AuditOperationContext ctx;
+    auto harness = createDhtDynamicHarness(stateStore);
+    auto ctx = harness.context();
 
     // ── Setup: init → keygen → StateStore → tags ──
-    engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
+    harness.engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
     EXPECT_TRUE(ctx.initializeAlgorithmResult->ok) << "maint: init succeeded";
 
     ::Json::Value keyJson;
     keyJson["seed"] = static_cast<::Json::UInt64>(123);
-    engine->generateKeys(jsonInput(keyJson), ctx);
+    harness.engine->generateKeys(jsonInput(keyJson), ctx);
     EXPECT_TRUE(ctx.generateKeysResult->ok) << "maint: keygen succeeded";
 
     // Create initial blocks (4 blocks, deterministic content)
@@ -585,7 +602,7 @@ TEST(DhtDynamicFull, MaintenanceOperations)
     auto tagsDataMap = std::make_shared<AuditMsg::AuditDataMap>();
     tagsDataMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blockSource));
     tagsDataMap->emplace("fileId", std::string(testFileId));
-    engine->generateTags(AuditMsg::RawInput(tagsDataMap), ctx);
+    harness.engine->generateTags(AuditMsg::RawInput(tagsDataMap), ctx);
     EXPECT_TRUE(ctx.generateTagsResult->tags != nullptr) << "maint: tags generated";
 
     // Save the full tags collection — we will maintain it across operations
@@ -610,7 +627,7 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         updateJson["blockIndices"][0] = static_cast<::Json::UInt64>(1);
         updateJson["blockIndices"][1] = static_cast<::Json::UInt64>(2);
 
-        engine->maintain(jsonInput(updateJson), ctx);
+        harness.engine->maintain(jsonInput(updateJson), ctx);
         EXPECT_TRUE(ctx.maintainResult.has_value()) << "maint-update: result present";
         // maintenance() only updates StateStore; tags is nullptr (caller manages tags)
 
@@ -645,7 +662,7 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         auto fullBlockSource4 = std::make_shared<AuditData::MemoryAuditBlockSource>(
             allBlocksForUpdate, blockSize, 0);
 
-        AuditCore::AuditOperationContext updateCtx;
+        auto updateCtx = harness.context();
         updateCtx.initializeAlgorithmResult = ctx.initializeAlgorithmResult;
         updateCtx.generateKeysResult = ctx.generateKeysResult;
 
@@ -653,7 +670,7 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         updateTagsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(fullBlockSource4));
         updateTagsMap->emplace("fileId", std::string(testFileId));
         updateTagsMap->emplace("targetBlockIndices", std::vector<std::size_t>{1, 2});
-        engine->generateTags(AuditMsg::RawInput(updateTagsMap), updateCtx);
+        harness.engine->generateTags(AuditMsg::RawInput(updateTagsMap), updateCtx);
         EXPECT_TRUE(updateCtx.generateTagsResult->tags != nullptr) << "maint-update: new tags generated";
 
         // Step 3: Merge new tags into allTags using set()
@@ -676,18 +693,18 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         chalJson["challengeCount"]  = static_cast<::Json::UInt64>(2);
         chalJson["usePseudoRandom"] = true;
         chalJson["seed"]            = static_cast<::Json::UInt64>(999);
-        engine->generateChallenges(jsonInput(chalJson), ctx);
+        harness.engine->generateChallenges(jsonInput(chalJson), ctx);
         EXPECT_TRUE(ctx.generateChallengesResult->challenges != nullptr) << "maint-update: challenges generated";
 
         auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
         proofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(fullBlockSource4));
         proofsMap->emplace("tags", AuditMsg::TagsPtr(allTags));
-        engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
+        harness.engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
         EXPECT_TRUE(ctx.generateProofsResult->proves != nullptr) << "maint-update: proofs generated";
 
         ::Json::Value verifyJson;
         verifyJson["fileId"] = testFileId;
-        engine->verifyProofs(jsonInput(verifyJson), ctx);
+        harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
         EXPECT_TRUE(ctx.verifyProofsResult.has_value()) << "maint-update: verify result present";
         EXPECT_TRUE(ctx.verifyProofsResult->ok) << "maint-update: post-update verification SUCCEEDED";
         if (!ctx.verifyProofsResult->ok) {
@@ -700,16 +717,16 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         allTags->set(1, oldTag1);
         ctx.generateTagsResult->tags = allTags;
 
-        engine->generateChallenges(jsonInput(chalJson), ctx);
+        harness.engine->generateChallenges(jsonInput(chalJson), ctx);
         EXPECT_TRUE(ctx.generateChallengesResult->challenges != nullptr) << "maint-update: stale-tag challenges generated";
 
         auto staleProofsMap = std::make_shared<AuditMsg::AuditDataMap>();
         staleProofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(fullBlockSource4));
         staleProofsMap->emplace("tags", AuditMsg::TagsPtr(allTags));
-        engine->generateProofs(AuditMsg::RawInput(staleProofsMap), ctx);
+        harness.engine->generateProofs(AuditMsg::RawInput(staleProofsMap), ctx);
         EXPECT_TRUE(ctx.generateProofsResult->proves != nullptr) << "maint-update: stale-tag proofs generated";
 
-        engine->verifyProofs(jsonInput(verifyJson), ctx);
+        harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
         EXPECT_TRUE(ctx.verifyProofsResult.has_value()) << "maint-update: stale-tag verify result present";
         EXPECT_TRUE(!ctx.verifyProofsResult->ok) << "maint-update: stale tags MUST fail verification";
         if (ctx.verifyProofsResult->ok) {
@@ -733,7 +750,7 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         insertJson["blockIndices"][0] = static_cast<::Json::UInt64>(5);
         insertJson["blockIndices"][1] = static_cast<::Json::UInt64>(6);
 
-        engine->maintain(jsonInput(insertJson), ctx);
+        harness.engine->maintain(jsonInput(insertJson), ctx);
         EXPECT_TRUE(ctx.maintainResult.has_value()) << "maint-insert: result present";
         EXPECT_TRUE(stateStore->getBlockCount(testFileId) == blockCount + 2) << "maint-insert: block count increased after insert";
 
@@ -770,7 +787,7 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         auto fullBlockSource6 = std::make_shared<AuditData::MemoryAuditBlockSource>(
             allBlocksForInsert, blockSize, 0);
 
-        AuditCore::AuditOperationContext insertCtx;
+        auto insertCtx = harness.context();
         insertCtx.initializeAlgorithmResult = ctx.initializeAlgorithmResult;
         insertCtx.generateKeysResult = ctx.generateKeysResult;
 
@@ -778,7 +795,7 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         insertTagsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(fullBlockSource6));
         insertTagsMap->emplace("fileId", std::string(testFileId));
         insertTagsMap->emplace("targetBlockIndices", std::vector<std::size_t>{5, 6});
-        engine->generateTags(AuditMsg::RawInput(insertTagsMap), insertCtx);
+        harness.engine->generateTags(AuditMsg::RawInput(insertTagsMap), insertCtx);
         EXPECT_TRUE(insertCtx.generateTagsResult->tags != nullptr) << "maint-insert: new tags generated";
 
         // Step 3: Merge new tags into allTags using set()
@@ -798,18 +815,18 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         chalJson["challengeCount"]  = static_cast<::Json::UInt64>(2);
         chalJson["usePseudoRandom"] = true;
         chalJson["seed"]            = static_cast<::Json::UInt64>(888);
-        engine->generateChallenges(jsonInput(chalJson), ctx);
+        harness.engine->generateChallenges(jsonInput(chalJson), ctx);
         EXPECT_TRUE(ctx.generateChallengesResult->challenges != nullptr) << "maint-insert: challenges generated";
 
         auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
         proofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(fullBlockSource6));
         proofsMap->emplace("tags", AuditMsg::TagsPtr(allTags));
-        engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
+        harness.engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
         EXPECT_TRUE(ctx.generateProofsResult->proves != nullptr) << "maint-insert: proofs generated";
 
         ::Json::Value verifyJson;
         verifyJson["fileId"] = testFileId;
-        engine->verifyProofs(jsonInput(verifyJson), ctx);
+        harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
         EXPECT_TRUE(ctx.verifyProofsResult.has_value()) << "maint-insert: verify result present";
         EXPECT_TRUE(ctx.verifyProofsResult->ok) << "maint-insert: post-insert verification SUCCEEDED";
         if (!ctx.verifyProofsResult->ok) {
@@ -838,16 +855,16 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         incompleteChalJson["challengeCount"]  = static_cast<::Json::UInt64>(6);  // challenge all 6 blocks
         incompleteChalJson["usePseudoRandom"] = true;
         incompleteChalJson["seed"]            = static_cast<::Json::UInt64>(999);
-        engine->generateChallenges(jsonInput(incompleteChalJson), ctx);
+        harness.engine->generateChallenges(jsonInput(incompleteChalJson), ctx);
         EXPECT_TRUE(ctx.generateChallengesResult->challenges != nullptr) << "maint-insert: incomplete-tag challenges generated";
 
         auto incompleteProofsMap = std::make_shared<AuditMsg::AuditDataMap>();
         incompleteProofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(fullBlockSource6));
         incompleteProofsMap->emplace("tags", AuditMsg::TagsPtr(oldAllTags));
-        engine->generateProofs(AuditMsg::RawInput(incompleteProofsMap), ctx);
+        harness.engine->generateProofs(AuditMsg::RawInput(incompleteProofsMap), ctx);
         EXPECT_TRUE(ctx.generateProofsResult->proves != nullptr) << "maint-insert: incomplete-tag proofs generated";
 
-        engine->verifyProofs(jsonInput(verifyJson), ctx);
+        harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
         EXPECT_TRUE(ctx.verifyProofsResult.has_value()) << "maint-insert: incomplete-tag verify result present";
         EXPECT_TRUE(!ctx.verifyProofsResult->ok) << "maint-insert: incomplete tags (missing blocks 5,6) MUST fail verification";
         if (ctx.verifyProofsResult->ok) {
@@ -873,7 +890,7 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         deleteJson["blockIndices"] = ::Json::Value(::Json::arrayValue);
         deleteJson["blockIndices"][0] = static_cast<::Json::UInt64>(6);
 
-        engine->maintain(jsonInput(deleteJson), ctx);
+        harness.engine->maintain(jsonInput(deleteJson), ctx);
         EXPECT_TRUE(ctx.maintainResult.has_value()) << "maint-delete: result present";
         EXPECT_TRUE(stateStore->getBlockCount(testFileId) < countBefore) << "maint-delete: block count decreased after delete";
 
@@ -933,18 +950,18 @@ TEST(DhtDynamicFull, MaintenanceOperations)
         chalJson["challengeCount"]  = static_cast<::Json::UInt64>(2);
         chalJson["usePseudoRandom"] = true;
         chalJson["seed"]            = static_cast<::Json::UInt64>(777);
-        engine->generateChallenges(jsonInput(chalJson), ctx);
+        harness.engine->generateChallenges(jsonInput(chalJson), ctx);
         EXPECT_TRUE(ctx.generateChallengesResult->challenges != nullptr) << "maint-delete: challenges generated";
 
         auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
         proofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(remainingBlockSource));
         proofsMap->emplace("tags", AuditMsg::TagsPtr(allTags));
-        engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
+        harness.engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
         EXPECT_TRUE(ctx.generateProofsResult->proves != nullptr) << "maint-delete: proofs generated";
 
         ::Json::Value verifyJson;
         verifyJson["fileId"] = testFileId;
-        engine->verifyProofs(jsonInput(verifyJson), ctx);
+        harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
         EXPECT_TRUE(ctx.verifyProofsResult.has_value()) << "maint-delete: verify result present";
         EXPECT_TRUE(ctx.verifyProofsResult->ok) << "maint-delete: post-delete verification SUCCEEDED";
         if (!ctx.verifyProofsResult->ok) {
@@ -964,18 +981,18 @@ TEST(DhtDynamicFull, ResultSerializationRoundtrip)
     const std::size_t blockSize  = 256;
 
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
-    auto engine = createDhtDynamicEngine(stateStore);
-    AuditCore::AuditOperationContext ctx;
+    auto harness = createDhtDynamicHarness(stateStore);
+    auto ctx = harness.context();
 
     // ── Step 1: Init ──
-    engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
+    harness.engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
     EXPECT_TRUE(ctx.initializeAlgorithmResult->ok) << "ser: init succeeded";
     expectSerializationRoundtrip(*ctx.initializeAlgorithmResult);
 
     // ── Step 2: KeyGen ──
     ::Json::Value keyJson;
     keyJson["seed"] = static_cast<::Json::UInt64>(42);
-    engine->generateKeys(jsonInput(keyJson), ctx);
+    harness.engine->generateKeys(jsonInput(keyJson), ctx);
     EXPECT_TRUE(ctx.generateKeysResult->ok) << "ser: keygen succeeded";
     expectSerializationRoundtrip(*ctx.generateKeysResult);
 
@@ -999,7 +1016,7 @@ TEST(DhtDynamicFull, ResultSerializationRoundtrip)
     auto tagsMap = std::make_shared<AuditMsg::AuditDataMap>();
     tagsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blockSource));
     tagsMap->emplace("fileId", std::string(testFileId));
-    engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
+    harness.engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
     EXPECT_TRUE(ctx.generateTagsResult->tags != nullptr) << "ser: tags generated";
     // Note: GenerateTagsResult is not CryptoSerializable, skip roundtrip test
 
@@ -1011,7 +1028,7 @@ TEST(DhtDynamicFull, ResultSerializationRoundtrip)
     chalJson["challengeCount"]  = static_cast<::Json::UInt64>(2);
     chalJson["usePseudoRandom"] = true;
     chalJson["seed"]            = static_cast<::Json::UInt64>(42);
-    engine->generateChallenges(jsonInput(chalJson), ctx);
+    harness.engine->generateChallenges(jsonInput(chalJson), ctx);
     EXPECT_TRUE(ctx.generateChallengesResult->challenges != nullptr) << "ser: challenges generated";
     expectSerializationRoundtrip(*ctx.generateChallengesResult);
 
@@ -1019,14 +1036,14 @@ TEST(DhtDynamicFull, ResultSerializationRoundtrip)
     auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
     proofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blockSource));
     proofsMap->emplace("tags", AuditMsg::TagsPtr(ctx.generateTagsResult->tags));
-    engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
+    harness.engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
     EXPECT_TRUE(ctx.generateProofsResult->proves != nullptr) << "ser: proofs generated";
     expectSerializationRoundtrip(*ctx.generateProofsResult);
 
     // ── Step 6: Verify ──
     ::Json::Value verifyJson;
     verifyJson["fileId"] = testFileId;
-    engine->verifyProofs(jsonInput(verifyJson), ctx);
+    harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
     EXPECT_TRUE(ctx.verifyProofsResult->ok) << "ser: verification succeeded";
     expectSerializationRoundtrip(*ctx.verifyProofsResult);
 
@@ -1073,18 +1090,19 @@ makeFixedBlockSource(std::size_t blockCount, std::size_t blockSize, std::size_t 
     return std::make_shared<AuditData::MemoryAuditBlockSource>(blocks, blockSize, globalStart);
 }
 
-/// Init + KeyGen a fresh DHTDynamic engine over `stateStore`.
-static std::shared_ptr<AuditCore::AuditEngine>
+/// Init + KeyGen a fresh DHTDynamic harness over `stateStore`, binding `ctx` to it.
+static DhtDynamicHarness
 initAndKeygenDhtDynamic(
     const std::shared_ptr<AuditStrat::DHTDynamic::DynamicHashTableStateStore> &stateStore,
     AuditCore::AuditOperationContext &ctx)
 {
-    auto engine = createDhtDynamicEngine(stateStore);
-    engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
+    auto harness = createDhtDynamicHarness(stateStore);
+    ctx = harness.context();
+    harness.engine->initializeAlgorithm(AuditMsg::RawInput(), ctx);
     ::Json::Value keyJson;
     keyJson["seed"] = static_cast<::Json::UInt64>(7);
-    engine->generateKeys(jsonInput(keyJson), ctx);
-    return engine;
+    harness.engine->generateKeys(jsonInput(keyJson), ctx);
+    return harness;
 }
 
 TEST(DhtDynamicSelector, AbsentAndEmptySelectFullWindow)
@@ -1092,7 +1110,7 @@ TEST(DhtDynamicSelector, AbsentAndEmptySelectFullWindow)
     const std::string fileId = "dhtd-selector-full-window";
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
     AuditCore::AuditOperationContext ctx;
-    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+    auto harness = initAndKeygenDhtDynamic(stateStore, ctx);
     ASSERT_TRUE(ctx.generateKeysResult.has_value());
 
     auto blocks = makeFixedBlockSource(6, 64, 0); // 6 blocks, global start 0
@@ -1100,7 +1118,7 @@ TEST(DhtDynamicSelector, AbsentAndEmptySelectFullWindow)
     ASSERT_EQ(blockCount, 6u);
 
     // Absent selector → every block of the window.
-    engine->generateTags(selectorTagsInput(blocks, fileId, std::nullopt), ctx);
+    harness.engine->generateTags(selectorTagsInput(blocks, fileId, std::nullopt), ctx);
     ASSERT_TRUE(ctx.generateTagsResult.has_value());
     ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
     ASSERT_EQ(ctx.generateTagsResult->tags->size(), blockCount);
@@ -1110,7 +1128,7 @@ TEST(DhtDynamicSelector, AbsentAndEmptySelectFullWindow)
 
     // Empty selector → same full window (NOT "no blocks at all").
     AuditCore::AuditOperationContext emptyCtx = ctx;
-    engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{}), emptyCtx);
+    harness.engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{}), emptyCtx);
     ASSERT_TRUE(emptyCtx.generateTagsResult.has_value());
     ASSERT_NE(emptyCtx.generateTagsResult->tags, nullptr);
     EXPECT_EQ(emptyCtx.generateTagsResult->tags->size(), blockCount);
@@ -1123,7 +1141,7 @@ TEST(DhtDynamicSelector, WrongTypeIsRejected)
 {
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
     AuditCore::AuditOperationContext ctx;
-    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+    auto harness = initAndKeygenDhtDynamic(stateStore, ctx);
 
     auto blocks = makeFixedBlockSource(4, 64, 0);
 
@@ -1134,7 +1152,7 @@ TEST(DhtDynamicSelector, WrongTypeIsRejected)
     tagsMap->emplace("fileId", std::string("dhtd-selector-wrong-type"));
     tagsMap->emplace("targetBlockIndices", std::vector<int>{1, 2});
 
-    EXPECT_THROW(engine->generateTags(AuditMsg::RawInput(tagsMap), ctx), std::runtime_error);
+    EXPECT_THROW(harness.engine->generateTags(AuditMsg::RawInput(tagsMap), ctx), std::runtime_error);
     EXPECT_FALSE(ctx.generateTagsResult.has_value());
     // createRequest rejected before generateTags ran — no state registered.
     EXPECT_FALSE(stateStore->hasFile("dhtd-selector-wrong-type"));
@@ -1144,7 +1162,7 @@ TEST(DhtDynamicSelector, ZeroAndOutOfWindowRejectedWithoutStateMutation)
 {
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
     AuditCore::AuditOperationContext ctx;
-    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+    auto harness = initAndKeygenDhtDynamic(stateStore, ctx);
 
     auto blocks = makeFixedBlockSource(6, 64, 0);
     const std::size_t blockCount = blocks->availableBlockCount();
@@ -1159,7 +1177,7 @@ TEST(DhtDynamicSelector, ZeroAndOutOfWindowRejectedWithoutStateMutation)
     for (const std::size_t bad : {std::size_t{0}, blockCount + 1}) {
         AuditCore::AuditOperationContext badCtx = ctx;
         EXPECT_THROW(
-            engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{bad}),
+            harness.engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{bad}),
                                  badCtx),
             std::runtime_error)
             << "block index " << bad << " must be rejected";
@@ -1171,7 +1189,7 @@ TEST(DhtDynamicSelector, ZeroAndOutOfWindowRejectedWithoutStateMutation)
     // Duplicate indices are rejected too — still untouched.
     AuditCore::AuditOperationContext dupCtx = ctx;
     EXPECT_THROW(
-        engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{3, 3}),
+        harness.engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{3, 3}),
                              dupCtx),
         std::runtime_error);
     EXPECT_FALSE(stateStore->hasFile(fileId));
@@ -1182,14 +1200,14 @@ TEST(DhtDynamicSelector, NonContiguousWindowRegistersOnlySelectedBlocks)
     const std::string fileId = "dhtd-selector-window";
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
     AuditCore::AuditOperationContext ctx;
-    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+    auto harness = initAndKeygenDhtDynamic(stateStore, ctx);
 
     auto full = makeFixedBlockSource(6, 64, 0); // 6 blocks, global start 0
     const std::size_t blockSize = full->blockSize();
     ASSERT_EQ(full->availableBlockCount(), 6u);
 
     // Full-window run first: registers blocks 1..6 and fixes their metadata.
-    engine->generateTags(selectorTagsInput(full, fileId, std::nullopt), ctx);
+    harness.engine->generateTags(selectorTagsInput(full, fileId, std::nullopt), ctx);
     ASSERT_TRUE(ctx.generateTagsResult.has_value());
     ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
     const auto fullTags = ctx.generateTagsResult->tags;
@@ -1209,7 +1227,7 @@ TEST(DhtDynamicSelector, NonContiguousWindowRegistersOnlySelectedBlocks)
 
     // Non-contiguous selection inside the window: 1-based blocks 3 and 6.
     AuditCore::AuditOperationContext winCtx = ctx;
-    engine->generateTags(selectorTagsInput(window, fileId, std::vector<std::size_t>{3, 6}), winCtx);
+    harness.engine->generateTags(selectorTagsInput(window, fileId, std::vector<std::size_t>{3, 6}), winCtx);
 
     ASSERT_TRUE(winCtx.generateTagsResult.has_value());
     ASSERT_NE(winCtx.generateTagsResult->tags, nullptr);
@@ -1237,13 +1255,13 @@ TEST(DhtDynamicSelector, SparseSelectionRegistersOnlySelectedBlocks)
     const std::string fileId = "dhtd-selector-sparse-register";
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
     AuditCore::AuditOperationContext ctx;
-    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+    auto harness = initAndKeygenDhtDynamic(stateStore, ctx);
 
     auto blocks = makeFixedBlockSource(6, 64, 0); // 6 blocks, global start 0
     ASSERT_EQ(blocks->availableBlockCount(), 6u);
 
     // Fresh file, non-contiguous selection {1, 4} → exactly two registrations.
-    engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{1, 4}), ctx);
+    harness.engine->generateTags(selectorTagsInput(blocks, fileId, std::vector<std::size_t>{1, 4}), ctx);
 
     ASSERT_TRUE(ctx.generateTagsResult.has_value());
     ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
@@ -1273,7 +1291,7 @@ TEST(DhtDynamicStageKeys, ProducerWireKeysDriveEveryStageInput)
     const std::string fileId = "dhtd-engine-contract";
     auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
     AuditCore::AuditOperationContext ctx;
-    auto engine = initAndKeygenDhtDynamic(stateStore, ctx);
+    auto harness = initAndKeygenDhtDynamic(stateStore, ctx);
     ASSERT_TRUE(ctx.generateKeysResult.has_value());
 
     auto blocks = makeFixedBlockSource(4, 64, 0);
@@ -1284,7 +1302,7 @@ TEST(DhtDynamicStageKeys, ProducerWireKeysDriveEveryStageInput)
     auto tagsMap = std::make_shared<AuditMsg::AuditDataMap>();
     tagsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blocks));
     tagsMap->emplace("fileId", std::string(fileId));
-    engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
+    harness.engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
     ASSERT_TRUE(ctx.generateTagsResult.has_value());
     ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
     EXPECT_EQ(ctx.generateTagsResult->tags->size(), blockCount);
@@ -1299,7 +1317,7 @@ TEST(DhtDynamicStageKeys, ProducerWireKeysDriveEveryStageInput)
     chalJson["challengeCount"]  = static_cast<::Json::UInt64>(2);
     chalJson["usePseudoRandom"] = true;
     chalJson["seed"]            = static_cast<::Json::UInt64>(42);
-    engine->generateChallenges(jsonInput(chalJson), ctx);
+    harness.engine->generateChallenges(jsonInput(chalJson), ctx);
     ASSERT_TRUE(ctx.generateChallengesResult.has_value());
     auto challenges = std::dynamic_pointer_cast<DHTD::DHTDynamicChallenges>(
         ctx.generateChallengesResult->challenges);
@@ -1309,11 +1327,11 @@ TEST(DhtDynamicStageKeys, ProducerWireKeysDriveEveryStageInput)
     EXPECT_EQ(challenges->blockCount(), blockCount);
 
     // Same seed ⇒ same selection: proves the seed key reached the stage.
-    AuditCore::AuditOperationContext repeatCtx;
+    auto repeatCtx = harness.context();
     repeatCtx.initializeAlgorithmResult = ctx.initializeAlgorithmResult;
     repeatCtx.generateKeysResult = ctx.generateKeysResult;
     repeatCtx.generateTagsResult = ctx.generateTagsResult;
-    engine->generateChallenges(jsonInput(chalJson), repeatCtx);
+    harness.engine->generateChallenges(jsonInput(chalJson), repeatCtx);
     ASSERT_TRUE(repeatCtx.generateChallengesResult.has_value());
     auto repeated = std::dynamic_pointer_cast<DHTD::DHTDynamicChallenges>(
         repeatCtx.generateChallengesResult->challenges);
@@ -1332,14 +1350,14 @@ TEST(DhtDynamicStageKeys, ProducerWireKeysDriveEveryStageInput)
     auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
     proofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(blocks));
     proofsMap->emplace("tags", AuditMsg::TagsPtr(ctx.generateTagsResult->tags));
-    engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
+    harness.engine->generateProofs(AuditMsg::RawInput(proofsMap), ctx);
     ASSERT_TRUE(ctx.generateProofsResult.has_value());
     ASSERT_NE(ctx.generateProofsResult->proves, nullptr);
 
     // ── ProofVerify: fileId (userId is unread by this strategy) ──
     ::Json::Value verifyJson;
     verifyJson["fileId"] = fileId;
-    engine->verifyProofs(jsonInput(verifyJson), ctx);
+    harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
     ASSERT_TRUE(ctx.verifyProofsResult.has_value());
     EXPECT_TRUE(ctx.verifyProofsResult->ok) << "reason: " << ctx.verifyProofsResult->reason;
 }

@@ -50,6 +50,7 @@ namespace CAMatrix::Audit::Strategies::DHTDynamic {
 
 void DynamicHashTableStateStore::addFile(const std::string& fileId)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (files_.find(fileId) != files_.end()) {
         throw std::runtime_error("DynamicHashTableStateStore::addFile: file '" +
             fileId + "' already exists");
@@ -60,6 +61,7 @@ void DynamicHashTableStateStore::addFile(const std::string& fileId)
 
 void DynamicHashTableStateStore::addFile(const std::string& fileId, std::size_t blockCount)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (files_.find(fileId) != files_.end()) {
         throw std::runtime_error("DynamicHashTableStateStore::addFile: file '" +
             fileId + "' already exists");
@@ -81,6 +83,7 @@ void DynamicHashTableStateStore::addFile(const std::string& fileId, std::size_t 
 
 void DynamicHashTableStateStore::removeFile(const std::string& fileId)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = files_.find(fileId);
     if (it == files_.end()) {
         throw std::runtime_error("DynamicHashTableStateStore::removeFile: file '" +
@@ -91,6 +94,7 @@ void DynamicHashTableStateStore::removeFile(const std::string& fileId)
 
 bool DynamicHashTableStateStore::hasFile(const std::string& fileId) const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     return files_.find(fileId) != files_.end();
 }
 
@@ -100,6 +104,7 @@ std::shared_ptr<BlockMetadata>
 DynamicHashTableStateStore::getBlockMetadata(
     const std::string& fileId, std::size_t blockIndex) const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = files_.find(fileId);
     if (it == files_.end()) {
         throw std::runtime_error("DynamicHashTableStateStore::getBlockMetadata: file '" +
@@ -126,6 +131,7 @@ DynamicHashTableStateStore::getBlockMetadata(
 
 std::size_t DynamicHashTableStateStore::getBlockCount(const std::string& fileId) const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = files_.find(fileId);
     if (it == files_.end()) {
         throw std::runtime_error("DynamicHashTableStateStore::getBlockCount: file '" +
@@ -138,6 +144,7 @@ BlockMetadataCollectionPtr
 DynamicHashTableStateStore::getBlockMetadataCollection(
     const std::string& fileId) const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = files_.find(fileId);
     if (it == files_.end()) {
         throw std::runtime_error(
@@ -153,6 +160,7 @@ void DynamicHashTableStateStore::modifyBlock(
     const std::string& fileId,
     std::size_t blockIndex)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = files_.find(fileId);
     if (it == files_.end()) {
         throw std::runtime_error("DynamicHashTableStateStore::modifyBlock: file '" +
@@ -179,6 +187,7 @@ void DynamicHashTableStateStore::insertBlock(
     const std::string& fileId,
     std::size_t blockIndex)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = files_.find(fileId);
     if (it == files_.end()) {
         throw std::runtime_error("DynamicHashTableStateStore::insertBlock: file '" +
@@ -196,9 +205,9 @@ void DynamicHashTableStateStore::insertBlock(
 
     // Collect entries at collIdx or above that need to be shifted
     std::vector<std::pair<std::size_t, std::shared_ptr<BlockMetadata>>> toShift;
-    for (auto entryIt = collection->begin(); entryIt != collection->end(); ++entryIt) {
-        if (entryIt->first >= collIdx) {
-            toShift.emplace_back(entryIt->first, entryIt->second);
+    for (const auto& entry : collection->snapshot()) {
+        if (entry.first >= collIdx) {
+            toShift.emplace_back(entry.first, entry.second);
         }
     }
 
@@ -207,9 +216,9 @@ void DynamicHashTableStateStore::insertBlock(
     if (!toShift.empty()) {
         // Save all entries below collIdx (they stay unchanged)
         std::vector<std::pair<std::size_t, std::shared_ptr<BlockMetadata>>> below;
-        for (auto entryIt = collection->begin(); entryIt != collection->end(); ++entryIt) {
-            if (entryIt->first < collIdx) {
-                below.emplace_back(entryIt->first, entryIt->second);
+        for (const auto& entry : collection->snapshot()) {
+            if (entry.first < collIdx) {
+                below.emplace_back(entry.first, entry.second);
             }
         }
 
@@ -230,6 +239,7 @@ void DynamicHashTableStateStore::insertBlock(
 void DynamicHashTableStateStore::deleteBlock(
     const std::string& fileId, std::size_t blockIndex)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = files_.find(fileId);
     if (it == files_.end()) {
         throw std::runtime_error("DynamicHashTableStateStore::deleteBlock: file '" +
@@ -256,13 +266,13 @@ void DynamicHashTableStateStore::deleteBlock(
     std::vector<std::pair<std::size_t, std::shared_ptr<BlockMetadata>>> below;
     // Collect entries above collIdx (shift down by 1)
     std::vector<std::pair<std::size_t, std::shared_ptr<BlockMetadata>>> above;
-    for (auto entryIt = collection->begin(); entryIt != collection->end(); ++entryIt) {
-        if (entryIt->first < collIdx) {
-            below.emplace_back(entryIt->first, entryIt->second);
-        } else if (entryIt->first > collIdx) {
-            above.emplace_back(entryIt->first, entryIt->second);
+    for (const auto& entry : collection->snapshot()) {
+        if (entry.first < collIdx) {
+            below.emplace_back(entry.first, entry.second);
+        } else if (entry.first > collIdx) {
+            above.emplace_back(entry.first, entry.second);
         }
-        // entryIt->first == collIdx is the one being deleted — skip it
+        // entry.first == collIdx is the one being deleted — skip it
     }
 
     // Clear and rebuild
@@ -279,6 +289,7 @@ void DynamicHashTableStateStore::deleteBlock(
 
 std::vector<std::string> DynamicHashTableStateStore::listFiles() const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> result;
     result.reserve(files_.size());
     for (const auto& [fileId, _] : files_) {
@@ -292,6 +303,7 @@ std::vector<std::string> DynamicHashTableStateStore::listFiles() const
 void DynamicHashTableStateStore::setBlockMetadataCollection(
     const std::string& fileId, BlockMetadataCollectionPtr collection)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = files_.find(fileId);
     if (it == files_.end()) {
         throw std::runtime_error(

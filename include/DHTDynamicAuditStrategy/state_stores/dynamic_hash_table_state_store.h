@@ -49,6 +49,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -77,7 +78,10 @@ using CAMatrix::Audit::Core::InMemoryBlockMetadataCollection;
  *          injected via the constructor for algorithms that need custom
  *          BlockMetadata subclasses.
  *
- *          Not thread-safe.
+ *          Thread-safe: independent scenarios may use the same registered
+ *          strategy through separate per-operation stores. File-map mutations
+ *          and reads are serialized; returned collections are safe for
+ *          concurrent access through InMemoryBlockMetadataCollection.
  */
 class DynamicHashTableStateStore final : public DynamicPdpStateStore {
 public:
@@ -198,6 +202,9 @@ private:
 
     /** @brief Factory for creating BlockMetadata instances during deserialization */
     InMemoryBlockMetadataCollection::BlockMetadataFactory metadataFactory_;
+
+    /** @brief Protects file map mutations and concurrent lookup/read operations. */
+    mutable std::mutex mutex_;
 };
 
 } // namespace CAMatrix::Audit::Strategies::DHTDynamic

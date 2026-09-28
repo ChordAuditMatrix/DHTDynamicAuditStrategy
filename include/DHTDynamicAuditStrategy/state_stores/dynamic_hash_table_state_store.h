@@ -41,6 +41,7 @@
 #ifndef DHTDYNAMIC_DYNAMIC_HASH_TABLE_STATE_STORE_H
 #define DHTDYNAMIC_DYNAMIC_HASH_TABLE_STATE_STORE_H
 
+#include "ChordAuditMatrixLib/interfaces/audit/dynamic_strategy.h"
 #include "ChordAuditMatrixLib/interfaces/audit/state_stores/dynamic_pdp_state_store.h"
 #include "ChordAuditMatrixLib/implementations/audit/state_stores/in_memory_block_metadata_collection.h"
 #include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
@@ -91,7 +92,7 @@ public:
      *               Defaults to VersionedBlockMetadata.
      */
     explicit DynamicHashTableStateStore(
-        InMemoryBlockMetadataCollection::BlockMetadataFactory factory =
+        CAMatrix::Audit::Core::BlockMetadataFactory factory =
         []() -> std::shared_ptr<BlockMetadata> {
             const auto now = static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(
@@ -201,7 +202,7 @@ private:
     std::unordered_map<std::string, BlockMetadataCollectionPtr> files_;
 
     /** @brief Factory for creating BlockMetadata instances during deserialization */
-    InMemoryBlockMetadataCollection::BlockMetadataFactory metadataFactory_;
+    CAMatrix::Audit::Core::BlockMetadataFactory metadataFactory_;
 
     /** @brief Protects file map mutations and concurrent lookup/read operations. */
     mutable std::mutex mutex_;

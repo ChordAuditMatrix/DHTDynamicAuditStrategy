@@ -47,7 +47,7 @@ constexpr std::uint64_t kFixedTs = 1'700'000'000;
 
 /// Factory that builds a VersionedBlockMetadata with a fixed timestamp so tests
 /// can assert on version/timestamp values without flakiness.
-InMemoryBlockMetadataCollection::BlockMetadataFactory fixedTimestampFactory()
+CAMatrix::Audit::Core::BlockMetadataFactory fixedTimestampFactory()
 {
     return []() -> std::shared_ptr<BlockMetadata> {
         return std::make_shared<VersionedBlockMetadata>(1, kFixedTs);

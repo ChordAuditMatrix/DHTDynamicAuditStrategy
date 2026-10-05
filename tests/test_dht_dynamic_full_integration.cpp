@@ -79,13 +79,18 @@
 #include <json/json.h>
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -1360,6 +1365,302 @@ TEST(DhtDynamicStageKeys, ProducerWireKeysDriveEveryStageInput)
     harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
     ASSERT_TRUE(ctx.verifyProofsResult.has_value());
     EXPECT_TRUE(ctx.verifyProofsResult->ok) << "reason: " << ctx.verifyProofsResult->reason;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Concurrent disjoint-window tag generation over one shared StateStore
+//
+// Contract under test: the real DHTDynamicAuditStrategy can tag several
+// *disjoint* global block windows in parallel against ONE StateStore that
+// already carries the file entry — exactly the store production
+// StateStoreAdminService::prepareStateStore hands to every operation
+// (createStateStore → addFile → setBlockMetadataCollection → file state).
+// Each worker owns its AuditOperationContext and its global-window
+// MemoryAuditBlockSource, but shares the strategy and the StateStore.
+//
+// The assertions pin the observable outcome of that run:
+//   - every window returns real DHTDynamicTag artifacts (no mock echo);
+//   - the union of the windows' sparse global keys is EXACTLY [0, totalBlocks)
+//     with no gap and no index produced by two windows;
+//   - the StateStore holds exactly one valid metadata record (version=1,
+//     timestamp>0) per block — nothing was lost to the concurrency;
+//   - the merged tag set still drives the real challenge → proof → verify
+//     roundtrip (Θ^r == Λ·e(H, R)).  The plugin DOES ship a verifier, so the
+//     roundtrip is executed rather than described; no proof interface is
+//     stubbed or mocked.
+// ═══════════════════════════════════════════════════════════════
+
+/// Deterministic block content keyed by the GLOBAL block index, so a window
+/// source and the full-file proof source agree byte-for-byte on shared blocks.
+static std::vector<std::uint8_t>
+deterministicGlobalBlock(std::size_t globalIndex, std::size_t blockSize)
+{
+    std::vector<std::uint8_t> block(blockSize);
+    for (std::size_t j = 0; j < blockSize; ++j) {
+        block[j] = static_cast<std::uint8_t>((globalIndex * 131u + j * 17u + 7u) & 0xFFu);
+    }
+    return block;
+}
+
+/// Render a captured worker failure as a readable assertion message.
+static std::string workerFailureMessage(const std::exception_ptr& error)
+{
+    if (!error) {
+        return {};
+    }
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception& e) {
+        return e.what();
+    } catch (...) {
+        return "non-std::exception";
+    }
+}
+
+TEST(DhtDynamicConcurrency, DisjointWindowsSharePreparedStateStore)
+{
+    const std::string fileId      = "dhtd-concurrent-disjoint-windows";
+    const std::size_t totalBlocks = 4423;  // prime → windows cannot round-trip evenly
+    const std::size_t windowCount = 16;    // contract: at most 16 balanced windows
+    const std::size_t blockSize   = 32;    // one 32-byte segment per block
+
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext seedCtx;
+    auto harness = initAndKeygenDhtDynamic(stateStore, seedCtx);
+    ASSERT_TRUE(seedCtx.generateKeysResult.has_value());
+
+    // ── prepareStateStore equivalent: the file entry (empty) is registered
+    // before any operation runs; tag generation then auto-registers exactly
+    // the blocks each window touches. ──
+    stateStore->addFile(fileId);
+    ASSERT_TRUE(stateStore->hasFile(fileId));
+    ASSERT_EQ(stateStore->getBlockCount(fileId), 0u);
+
+    // ── Balanced, disjoint 1-based windows tiling [1, totalBlocks] exactly ──
+    const std::size_t base = totalBlocks / windowCount;
+    const std::size_t rem  = totalBlocks % windowCount;
+    std::vector<std::pair<std::size_t, std::size_t>> windows;  // inclusive [begin, end]
+    windows.reserve(windowCount);
+    std::size_t cursor = 1;
+    for (std::size_t w = 0; w < windowCount; ++w) {
+        const std::size_t count = base + (w < rem ? 1u : 0u);
+        windows.emplace_back(cursor, cursor + count - 1);
+        cursor += count;
+    }
+    ASSERT_EQ(cursor, totalBlocks + 1) << "windows must tile the whole file";
+
+    // One global-offset block source per window, built before the threads start
+    // so the contended region is strictly the shared strategy + StateStore.
+    std::vector<AuditData::AuditBlockSourcePtr> sources(windowCount);
+    for (std::size_t w = 0; w < windowCount; ++w) {
+        const std::size_t begin = windows[w].first;
+        const std::size_t end   = windows[w].second;
+        std::vector<std::vector<std::uint8_t>> blocks;
+        blocks.reserve(end - begin + 1);
+        for (std::size_t g = begin; g <= end; ++g) {
+            blocks.push_back(deterministicGlobalBlock(g, blockSize));
+        }
+        sources[w] = std::make_shared<AuditData::MemoryAuditBlockSource>(
+            std::move(blocks), blockSize, begin - 1);
+    }
+
+    struct WindowOutcome {
+        AuditMsg::TagsPtr tags;
+        std::exception_ptr error;
+    };
+    std::vector<WindowOutcome> outcomes(windowCount);
+
+    // ── Barrier: every worker parks until the last one has arrived ──
+    std::mutex gateMutex;
+    std::condition_variable gateCv;
+    std::size_t readyCount = 0;
+    bool start = false;
+    bool abortWorkers = false;
+
+    auto worker = [&](std::size_t w) {
+        {
+            std::unique_lock<std::mutex> lock(gateMutex);
+            ++readyCount;
+            gateCv.notify_all();
+            gateCv.wait(lock, [&] { return start; });
+            if (abortWorkers) {
+                return;
+            }
+        }
+
+        try {
+            // Own context bound to the SHARED strategy + StateStore.
+            AuditCore::AuditOperationContext ctx = harness.context();
+            ctx.initializeAlgorithmResult = seedCtx.initializeAlgorithmResult;
+            ctx.generateKeysResult        = seedCtx.generateKeysResult;
+
+            const std::size_t begin = windows[w].first;
+            const std::size_t end   = windows[w].second;
+
+            std::vector<std::size_t> target;
+            target.reserve(end - begin + 1);
+            for (std::size_t g = begin; g <= end; ++g) {
+                target.push_back(g);
+            }
+
+            auto tagsMap = std::make_shared<AuditMsg::AuditDataMap>();
+            tagsMap->emplace("blocks", sources[w]);
+            tagsMap->emplace("fileId", std::string(fileId));
+            tagsMap->emplace("targetBlockIndices", target);
+            harness.engine->generateTags(AuditMsg::RawInput(tagsMap), ctx);
+
+            if (!ctx.generateTagsResult.has_value() || !ctx.generateTagsResult->tags) {
+                throw std::runtime_error("generateTags produced no tags for window " +
+                                         std::to_string(w));
+            }
+            outcomes[w].tags = ctx.generateTagsResult->tags;
+        } catch (...) {
+            outcomes[w].error = std::current_exception();
+        }
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(windowCount);
+    try {
+        for (std::size_t w = 0; w < windowCount; ++w) {
+            workers.emplace_back(worker, w);
+        }
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lock(gateMutex);
+            abortWorkers = true;
+            start = true;
+        }
+        gateCv.notify_all();
+        for (auto& thread : workers) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+        throw;
+    }
+    {
+        std::unique_lock<std::mutex> lock(gateMutex);
+        gateCv.wait(lock, [&] { return readyCount == windowCount; });
+        start = true;
+    }
+    gateCv.notify_all();
+    for (auto& t : workers) {
+        t.join();  // join on every path, workers captured their own failures
+    }
+
+    // ── No worker may fail ──
+    for (std::size_t w = 0; w < windowCount; ++w) {
+        ASSERT_FALSE(static_cast<bool>(outcomes[w].error))
+            << "window " << w << " failed: " << workerFailureMessage(outcomes[w].error);
+    }
+
+    // ── Every window returned real DHTDynamicTag artifacts inside its range ──
+    for (std::size_t w = 0; w < windowCount; ++w) {
+        const std::size_t begin = windows[w].first;
+        const std::size_t end   = windows[w].second;
+        ASSERT_NE(outcomes[w].tags, nullptr);
+        EXPECT_EQ(outcomes[w].tags->size(), end - begin + 1);
+        EXPECT_EQ(outcomes[w].tags->maxIndex(), end);
+        for (std::size_t g = begin; g <= end; ++g) {
+            ASSERT_TRUE(outcomes[w].tags->contains(g - 1))
+                << "window " << w << " missing global block " << g;
+            auto tag = std::dynamic_pointer_cast<DHTD::DHTDynamicTag>(
+                outcomes[w].tags->getByIndex(g - 1));
+            ASSERT_NE(tag, nullptr) << "window " << w << " block " << g << " is not a DHTDynamicTag";
+            EXPECT_FALSE(tag->sigma().isInfinity()) << "window " << w << " block " << g;
+        }
+    }
+
+    // ── Sparse global index coverage: exactly once per block, no gap/overlap ──
+    std::vector<std::size_t> coverage(totalBlocks, 0);
+    for (std::size_t w = 0; w < windowCount; ++w) {
+        for (std::size_t idx = 0; idx < totalBlocks; ++idx) {
+            if (outcomes[w].tags->contains(idx)) {
+                ++coverage[idx];
+            }
+        }
+    }
+    std::size_t gaps     = 0;
+    std::size_t overlaps = 0;
+    for (std::size_t idx = 0; idx < totalBlocks; ++idx) {
+        if (coverage[idx] == 0) {
+            ++gaps;
+        } else if (coverage[idx] > 1) {
+            ++overlaps;
+        }
+    }
+    EXPECT_EQ(gaps, 0u) << "global blocks left untagged";
+    EXPECT_EQ(overlaps, 0u) << "global blocks tagged by more than one window";
+
+    // ── StateStore: one valid record per block, nothing lost ──
+    ASSERT_EQ(stateStore->getBlockCount(fileId), totalBlocks);
+    auto collection = stateStore->getBlockMetadataCollection(fileId);
+    ASSERT_NE(collection, nullptr);
+    EXPECT_EQ(collection->size(), totalBlocks);
+    for (std::size_t g = 1; g <= totalBlocks; ++g) {
+        auto meta = stateStore->getBlockMetadata(fileId, g);
+        auto dhtMeta = std::dynamic_pointer_cast<DHTD::VersionedBlockMetadata>(meta);
+        ASSERT_NE(dhtMeta, nullptr) << "global block " << g << " has non-versioned metadata";
+        ASSERT_EQ(dhtMeta->version, 1u) << "global block " << g;
+        ASSERT_GT(dhtMeta->timestamp, 0u) << "global block " << g;
+    }
+
+    // ── Merge per-window artifacts into one global tag collection ──
+    auto mergedTags = std::make_shared<AuditMsg::InMemoryTags>(
+        []() -> std::shared_ptr<AuditMsg::Tag> {
+            return std::make_shared<DHTD::DHTDynamicTag>();
+        });
+    for (std::size_t w = 0; w < windowCount; ++w) {
+        for (std::size_t g = windows[w].first; g <= windows[w].second; ++g) {
+            mergedTags->set(g - 1, outcomes[w].tags->getByIndex(g - 1));
+        }
+    }
+    ASSERT_EQ(mergedTags->size(), totalBlocks);
+    ASSERT_EQ(mergedTags->maxIndex(), totalBlocks);
+
+    // ── Full-file source for proof generation (same content formula) ──
+    std::vector<std::vector<std::uint8_t>> fullBlocks;
+    fullBlocks.reserve(totalBlocks);
+    for (std::size_t g = 1; g <= totalBlocks; ++g) {
+        fullBlocks.push_back(deterministicGlobalBlock(g, blockSize));
+    }
+    auto fullSource = std::make_shared<AuditData::MemoryAuditBlockSource>(
+        std::move(fullBlocks), blockSize, 0);
+    ASSERT_EQ(fullSource->availableBlockCount(), totalBlocks);
+
+    // ── Real challenge → proof → verify roundtrip over the merged tags ──
+    AuditCore::AuditOperationContext roundCtx = harness.context();
+    roundCtx.initializeAlgorithmResult = seedCtx.initializeAlgorithmResult;
+    roundCtx.generateKeysResult        = seedCtx.generateKeysResult;
+
+    ::Json::Value chalJson;
+    chalJson["fileId"]          = fileId;
+    chalJson["blockCount"]      = static_cast<::Json::UInt64>(totalBlocks);
+    chalJson["challengeCount"]  = static_cast<::Json::UInt64>(windowCount);
+    chalJson["usePseudoRandom"] = true;
+    chalJson["seed"]            = static_cast<::Json::UInt64>(20261004);
+    harness.engine->generateChallenges(jsonInput(chalJson), roundCtx);
+    ASSERT_TRUE(roundCtx.generateChallengesResult.has_value());
+    auto challenges = std::dynamic_pointer_cast<DHTD::DHTDynamicChallenges>(
+        roundCtx.generateChallengesResult->challenges);
+    ASSERT_NE(challenges, nullptr);
+    EXPECT_EQ(challenges->blockCount(), totalBlocks);
+    ASSERT_EQ(challenges->challengeCount(), windowCount);
+
+    auto proofsMap = std::make_shared<AuditMsg::AuditDataMap>();
+    proofsMap->emplace("blocks", AuditData::AuditBlockSourcePtr(fullSource));
+    proofsMap->emplace("tags", AuditMsg::TagsPtr(mergedTags));
+    harness.engine->generateProofs(AuditMsg::RawInput(proofsMap), roundCtx);
+    ASSERT_TRUE(roundCtx.generateProofsResult.has_value());
+    ASSERT_NE(roundCtx.generateProofsResult->proves, nullptr);
+
+    ::Json::Value verifyJson;
+    verifyJson["fileId"] = fileId;
+    harness.engine->verifyProofs(jsonInput(verifyJson), roundCtx);
+    ASSERT_TRUE(roundCtx.verifyProofsResult.has_value());
+    EXPECT_TRUE(roundCtx.verifyProofsResult->ok)
+        << "post-concurrency verification failed: " << roundCtx.verifyProofsResult->reason;
 }
 
 // ═══════════════════════════════════════════════════════════════

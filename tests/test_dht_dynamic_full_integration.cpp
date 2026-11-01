@@ -37,6 +37,8 @@
  * - Validate StateStore operations (addFile, getBlockMetadata, getBlockCount).
  * - Validate maintenance operations (Update, Insert, Delete).
  * - Validate serialization/deserialization roundtrip for all Result types.
+ * - Validate that an unreadable StateStore block aborts tag generation with the
+ *   store's own error instead of auto-registering fresh block metadata.
  * - Validate engine.createArtifact(strategy, kind) for all DHTDynamic artifact types.
  *
  * @author Dylan Liu
@@ -75,6 +77,7 @@
 #include "ChordAuditMatrixLib/implementations/audit/data/memory_audit_unit_producer.h"
 #include "ChordAuditMatrixLib/implementations/audit/data/memory_audit_unit_sequence.h"
 #include "ChordAuditMatrixLib/implementations/audit/data/memory_audit_block_packer.h"
+#include "ChordAuditMatrixLib/implementations/audit/state_stores/in_memory_block_metadata_collection.h"
 
 #include <json/json.h>
 #include <algorithm>
@@ -88,6 +91,7 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1279,6 +1283,156 @@ TEST(DhtDynamicSelector, SparseSelectionRegistersOnlySelectedBlocks)
     EXPECT_NO_THROW(stateStore->getBlockMetadata(fileId, 1));
     EXPECT_NO_THROW(stateStore->getBlockMetadata(fileId, 4));
     EXPECT_THROW(stateStore->getBlockMetadata(fileId, 2), std::runtime_error);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// generateTags: an unreadable StateStore is not a missing block
+//
+// Contract under test: "missing" is exactly "the block metadata collection has
+// no entry for this index" (getByIndex() returns nullptr). A read that fails —
+// unreadable persisted state, repository failure — aborts tag generation with
+// the ORIGINAL error and registers nothing, so durable version/timestamp can
+// never be overwritten by a freshly registered version=1 row. A genuinely
+// absent block is still registered with version=1 / timestamp=now, and an
+// existing block keeps its durable metadata.
+// ═══════════════════════════════════════════════════════════════
+
+/// BlockMetadataCollection that behaves like a repository-backed one whose
+/// durable read fails: cache hits succeed, a cache miss throws instead of
+/// reporting the block as absent. setCalls counts writes, so a test can prove
+/// that a failed read registered nothing.
+class FailingReadBlockMetadataCollection final
+    : public AuditCore::InMemoryBlockMetadataCollection {
+public:
+    explicit FailingReadBlockMetadataCollection(std::string failure)
+        : failure_(std::move(failure)) {}
+
+    /// Number of writes applied through set() since construction.
+    std::size_t setCalls = 0;
+
+    void set(std::size_t index, std::shared_ptr<AuditCore::BlockMetadata> metadata) override
+    {
+        ++setCalls;
+        AuditCore::InMemoryBlockMetadataCollection::set(index, std::move(metadata));
+    }
+
+protected:
+    std::shared_ptr<AuditCore::BlockMetadata> doLoadBlock(std::size_t /*index*/) const override
+    {
+        throw std::runtime_error(failure_);
+    }
+
+private:
+    std::string failure_;
+};
+
+/// A block whose metadata cannot be read must abort tag generation with the
+/// store's own error — never be auto-registered as a new block — and must leave
+/// both the readable block's metadata and the collection contents untouched.
+TEST(DhtDynamicStateStoreReads, UnreadableBlockMetadataPropagatesWithoutRegistration)
+{
+    const std::string fileId = "dhtd-state-read-failure";
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext ctx;
+    auto harness = initAndKeygenDhtDynamic(stateStore, ctx);
+
+    auto blocks = makeFixedBlockSource(2, 64, 0);
+    ASSERT_EQ(blocks->availableBlockCount(), 2u);
+
+    // The file exists and block 1 has durable metadata; block 2's read fails at
+    // the persistence boundary (cache miss → doLoadBlock throws).
+    stateStore->addFile(fileId);
+    auto collection = std::make_shared<FailingReadBlockMetadataCollection>(
+        "persisted block metadata read failed");
+    collection->set(0, std::make_shared<DHTD::VersionedBlockMetadata>(7u, 777u));
+    collection->setCalls = 0; // ignore the durable seed above
+    stateStore->setBlockMetadataCollection(fileId, collection);
+
+    std::string error;
+    try {
+        harness.engine->generateTags(selectorTagsInput(blocks, fileId, std::nullopt), ctx);
+        ADD_FAILURE() << "generateTags accepted an unreadable StateStore block";
+    } catch (const std::runtime_error& e) {
+        error = e.what();
+    }
+
+    // The store's error surfaced verbatim instead of being rewritten as an
+    // auto-registration.
+    EXPECT_NE(error.find("persisted block metadata read failed"), std::string::npos) << error;
+    EXPECT_FALSE(ctx.generateTagsResult.has_value());
+
+    // Nothing was registered: no new entry, no write, no block count change.
+    EXPECT_EQ(collection->setCalls, 0u);
+    EXPECT_EQ(collection->size(), 1u);
+    EXPECT_FALSE(collection->contains(1));
+    EXPECT_EQ(stateStore->getBlockCount(fileId), 1u);
+
+    // The block that was readable kept its durable version/timestamp.
+    auto existing = std::dynamic_pointer_cast<DHTD::VersionedBlockMetadata>(
+        stateStore->getBlockMetadata(fileId, 1));
+    ASSERT_NE(existing, nullptr);
+    EXPECT_EQ(existing->version, 7u);
+    EXPECT_EQ(existing->timestamp, 777u);
+}
+
+/// A genuinely absent block (getByIndex() returns nullptr) is still registered
+/// with version=1 / timestamp=now, existing blocks keep their durable
+/// version/timestamp, and the tag stays derived from the stored metadata, so a
+/// second run reproduces it instead of re-registering.
+TEST(DhtDynamicStateStoreReads, GenuinelyMissingBlockIsRegisteredWithoutTouchingExisting)
+{
+    const std::string fileId = "dhtd-state-missing-block";
+    auto stateStore = std::make_shared<AuditStrat::DHTDynamic::DynamicHashTableStateStore>();
+    AuditCore::AuditOperationContext ctx;
+    auto harness = initAndKeygenDhtDynamic(stateStore, ctx);
+
+    auto blocks = makeFixedBlockSource(2, 64, 0);
+    ASSERT_EQ(blocks->availableBlockCount(), 2u);
+
+    // File exists with block 1 at version 7 / timestamp 777; block 2 is truly
+    // absent from the collection.
+    stateStore->addFile(fileId);
+    stateStore->getBlockMetadataCollection(fileId)
+        ->set(0, std::make_shared<DHTD::VersionedBlockMetadata>(7u, 777u));
+
+    harness.engine->generateTags(selectorTagsInput(blocks, fileId, std::nullopt), ctx);
+    ASSERT_TRUE(ctx.generateTagsResult.has_value());
+    ASSERT_NE(ctx.generateTagsResult->tags, nullptr);
+    EXPECT_EQ(ctx.generateTagsResult->tags->size(), 2u);
+    EXPECT_TRUE(ctx.generateTagsResult->tags->contains(0));
+    EXPECT_TRUE(ctx.generateTagsResult->tags->contains(1));
+
+    // The existing block was read, not replaced.
+    auto block1 = std::dynamic_pointer_cast<DHTD::VersionedBlockMetadata>(
+        stateStore->getBlockMetadata(fileId, 1));
+    ASSERT_NE(block1, nullptr);
+    EXPECT_EQ(block1->version, 7u);
+    EXPECT_EQ(block1->timestamp, 777u);
+
+    // Only the absent block was registered, using the stateStore factory values.
+    auto block2 = std::dynamic_pointer_cast<DHTD::VersionedBlockMetadata>(
+        stateStore->getBlockMetadata(fileId, 2));
+    ASSERT_NE(block2, nullptr);
+    EXPECT_EQ(block2->version, 1u);
+    EXPECT_GT(block2->timestamp, 0u);
+    EXPECT_EQ(stateStore->getBlockCount(fileId), 2u);
+
+    const auto firstTagForBlock2 = ctx.generateTagsResult->tags->getByIndex(1)->serialize();
+
+    // Re-running reads the registered metadata, so the same tag is produced and
+    // the stored row is not re-registered (identical version and timestamp).
+    AuditCore::AuditOperationContext repeat = ctx;
+    repeat.generateTagsResult.reset();
+    harness.engine->generateTags(selectorTagsInput(blocks, fileId, std::nullopt), repeat);
+    ASSERT_TRUE(repeat.generateTagsResult.has_value());
+    ASSERT_NE(repeat.generateTagsResult->tags, nullptr);
+    EXPECT_EQ(repeat.generateTagsResult->tags->getByIndex(1)->serialize(), firstTagForBlock2);
+
+    auto block2Again = std::dynamic_pointer_cast<DHTD::VersionedBlockMetadata>(
+        stateStore->getBlockMetadata(fileId, 2));
+    ASSERT_NE(block2Again, nullptr);
+    EXPECT_EQ(block2Again->version, 1u);
+    EXPECT_EQ(block2Again->timestamp, block2->timestamp);
 }
 
 // ═══════════════════════════════════════════════════════════════

@@ -40,6 +40,12 @@
  *          per operation on the request extension (copied from the operation
  *          context); generateTags throws if it is absent.
  *
+ *          "Missing" means exactly "the block metadata collection has no entry
+ *          for this index" (getByIndex() returns nullptr). A StateStore read
+ *          that throws — unreadable persisted state, repository failure — is a
+ *          real error and propagates unchanged: treating it as absence would
+ *          auto-register fresh metadata over durable state.
+ *
  *          Unlike SM9Static (σ_i = [x_ID](W_i + [m_i]U) + D_ID),
  *          DHTDynamic uses a BLS-based signature with message commitment:
  *          σ_i = [a]·[H_i + m_i·u], where a is the BLS signing scalar, u is the proof binding point.
@@ -212,15 +218,33 @@ DHTDynamicAuditStrategy::generateTags(
         stateStore->addFile(ext->fileId);
     }
 
+    // ── Resolve the file's metadata collection ──
+    // Reads go through the collection instead of getBlockMetadata() so that
+    // absence is an explicit nullptr result rather than a thrown exception.
+    // The collection is the same object getBlockMetadata() reads from, so a
+    // repository-backed store still loads on demand; but a read that throws
+    // (corrupt persisted state, repository failure) now propagates instead of
+    // being mistaken for a missing block.
+    auto collection = stateStore->getBlockMetadataCollection(ext->fileId);
+    if (!collection) {
+        throw std::runtime_error(
+            "DHTDynamic generateTags: stateStore returned no block metadata collection for file '" +
+            ext->fileId + "'");
+    }
+
     // ── Generate tags for each target block index ──
     for (const auto blockIndex : targetIndices) {
-        // Read per-block metadata from stateStore; auto-register if missing.
-        std::shared_ptr<CAMatrix::Audit::Core::BlockMetadata> meta;
-        try {
-            meta = stateStore->getBlockMetadata(ext->fileId, blockIndex);
-        } catch (const std::runtime_error&) {
-            // Block not in stateStore — auto-register by writing directly
-            // to the collection at the correct 0-based index.
+        // 1-based API index → 0-based collection index.
+        // getByIndex() returns nullptr only when the block is genuinely absent;
+        // any read error it raises (e.g. an unreadable persisted block) is a
+        // real failure and MUST propagate — auto-registering here would
+        // overwrite durable metadata with a fresh version/timestamp.
+        std::shared_ptr<CAMatrix::Audit::Core::BlockMetadata> meta =
+            collection->getByIndex(blockIndex - 1);
+
+        if (!meta) {
+            // Block is not in the stateStore — auto-register by writing
+            // directly to the collection at the correct 0-based index.
             // This uses the same metadata values as the stateStore's
             // factory (version=1, timestamp=now) so tag and stateStore
             // match exactly.
@@ -228,12 +252,10 @@ DHTDynamicAuditStrategy::generateTags(
                 std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count());
             meta = std::make_shared<CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(1, now);
-            auto collection = stateStore->getBlockMetadataCollection(ext->fileId);
             collection->set(blockIndex - 1, meta);
         }
 
-        // Cast outside try-catch so a type mismatch propagates as an error
-        // instead of being swallowed by the auto-register catch above.
+        // A metadata type mismatch is an error, never a missing block.
         auto dynMeta = std::dynamic_pointer_cast<CAMatrix::Audit::Strategies::DHTDynamic::VersionedBlockMetadata>(meta);
         if (!dynMeta) {
             throw std::runtime_error("DHTDynamic generateTags: block " +

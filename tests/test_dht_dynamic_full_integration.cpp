@@ -54,6 +54,7 @@
 #include "ChordAuditMatrixLib/interfaces/audit/messages/algorithm_params.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/request_result.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/challenges.h"
+#include "ChordAuditMatrixLib/interfaces/audit/messages/challenge_index_provider.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/proves.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/tags.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/in_memory_tags.h"
@@ -504,6 +505,20 @@ TEST(DhtDynamicFull, TamperDetection)
     // Re-verify via Engine — reads tampered proof from context
     harness.engine->verifyProofs(jsonInput(verifyJson), ctx);
     EXPECT_FALSE(ctx.verifyProofsResult->ok);
+}
+
+// Invalid verification input is an execution error, not evidence that a
+// cryptographic proof was checked and failed.
+TEST(DhtDynamicFull, MissingProofInputIsNotANegativeVerdict)
+{
+    AuditStrat::DHTDynamicAuditStrategy strategy;
+    AuditMsg::VerifyProofsRequest request;
+
+    EXPECT_THROW(static_cast<void>(strategy.verifyProofs(request)), std::invalid_argument);
+
+    request.challenges.emplace_back();
+    request.proves.emplace_back();
+    EXPECT_THROW(static_cast<void>(strategy.verifyProofs(request)), std::invalid_argument);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1815,6 +1830,37 @@ TEST(DhtDynamicConcurrency, DisjointWindowsSharePreparedStateStore)
     ASSERT_TRUE(roundCtx.verifyProofsResult.has_value());
     EXPECT_TRUE(roundCtx.verifyProofsResult->ok)
         << "post-concurrency verification failed: " << roundCtx.verifyProofsResult->reason;
+}
+
+// The fixed proof path needs the challenge's sampled positions before it can
+// batch-read tags. This focused check pins the DHTDynamic capability contract:
+// original ordered 1-based indices, duplicates preserved.
+TEST(DhtDynamicFull, ChallengeExposesOrderedSampledBlockIndices)
+{
+    DHTD::DHTDynamicChallenges challenges;
+    auto& items = challenges.items();
+
+    DHTD::DHTDynamicChallenges::ChallengeItem first;
+    first.blockIndex = 9;
+    items.push_back(first);
+
+    DHTD::DHTDynamicChallenges::ChallengeItem second;
+    second.blockIndex = 2;
+    items.push_back(second);
+
+    DHTD::DHTDynamicChallenges::ChallengeItem duplicate;
+    duplicate.blockIndex = 9;
+    items.push_back(duplicate);
+
+    const auto* provider =
+        dynamic_cast<const AuditMsg::ChallengeIndexProvider*>(&challenges);
+    ASSERT_NE(provider, nullptr)
+        << "DHTDynamicChallenges must expose its sampled block indices";
+
+    std::vector<std::size_t> indices;
+    provider->appendChallengedBlockIndices(indices);
+    EXPECT_EQ(indices, (std::vector<std::size_t>{9, 2, 9}))
+        << "indices must be the original 1-based values in challenge order";
 }
 
 // ═══════════════════════════════════════════════════════════════

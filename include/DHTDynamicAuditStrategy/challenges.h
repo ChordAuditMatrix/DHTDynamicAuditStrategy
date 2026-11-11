@@ -43,6 +43,7 @@
 #include "DHTDynamicAuditStrategy/state_stores/versioned_block_metadata.h"
 #include "ChordAuditMatrixLib/implementations/crypto/sm9_bls/data.h"
 #include "ChordAuditMatrixLib/implementations/crypto/sm9_bls/points.h"
+#include "ChordAuditMatrixLib/interfaces/audit/messages/challenge_index_provider.h"
 #include "ChordAuditMatrixLib/interfaces/audit/messages/challenges.h"
 
 #include <cstddef>
@@ -57,7 +58,9 @@ namespace CAMatrix::Audit::Strategies::DHTDynamic {
  * @details Contains challenge items with block indices, random coefficients,
  *          block metadata, and a blind commitment point R = [r]·y on G2.
  */
-class DHTDynamicChallenges final : public ::CAMatrix::Audit::Messages::Challenges {
+class DHTDynamicChallenges final
+    : public ::CAMatrix::Audit::Messages::Challenges,
+      public ::CAMatrix::Audit::Messages::ChallengeIndexProvider {
 public:
     /**
      * @struct ChallengeItem
@@ -130,6 +133,22 @@ public:
      * @return std::size_t, Challenge count
      */
     std::size_t challengeCount() const noexcept { return items_.size(); }
+
+    /**
+     * @brief Appends the sampled 1-based block indices in challenge order.
+     * @details Reads only the already-stored items; the challenge bytes, the
+     *          sampling result and the proof inputs are untouched. Duplicates
+     *          are reported as sampled, because deduplication belongs to the
+     *          reader that batches the lookups.
+     * @param indices [OUT] Caller-owned buffer; sampled indices are appended.
+     */
+    void appendChallengedBlockIndices(std::vector<std::size_t>& indices) const override
+    {
+        indices.reserve(indices.size() + items_.size());
+        for (const auto& item : items_) {
+            indices.push_back(item.blockIndex);
+        }
+    }
 
 protected:
     /**

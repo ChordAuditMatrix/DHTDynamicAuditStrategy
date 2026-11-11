@@ -54,6 +54,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <stdexcept>
+
 namespace CAMatrix::Audit::Strategies {
 
 using namespace DHTDynamic;
@@ -198,46 +200,34 @@ CAMatrix::Audit::Messages::VerifyProofsResult DHTDynamicAuditStrategy::verifyPro
 
     // DHTDynamic only supports single verification — extract first element from vectors
     if (input.challenges.empty() || input.proves.empty()) {
-        result.ok = false;
-        result.reason = "Empty challenges or proves vector";
-        return result;
+        throw std::invalid_argument("Empty challenges or proves vector");
     }
 
     auto ext = std::dynamic_pointer_cast<DHTDynamicVerifyRequestExt>(input.ext);
     auto challenges = std::dynamic_pointer_cast<DHTDynamicChallenges>(input.challenges[0]);
     auto proves = std::dynamic_pointer_cast<DHTDynamicProves>(input.proves[0]);
     if (!ext || !challenges || !proves) {
-        result.ok = false;
-        result.reason = "DHTDynamicVerifyRequestExt/Challenges/Proves required";
-        return result;
+        throw std::invalid_argument("DHTDynamicVerifyRequestExt/Challenges/Proves required");
     }
 
     if (ext->fileId.empty()) {
-        result.ok = false;
-        result.reason = "fileId required for verification";
-        return result;
+        throw std::invalid_argument("fileId required for verification");
     }
 
     if (!ext->userPublicParams) {
-        result.ok = false;
-        result.reason = "User public params required for verification";
-        return result;
+        throw std::invalid_argument("User public params required for verification");
     }
 
     // Guard: empty challenge items
     if (challenges->items().empty()) {
-        result.ok = false;
-        result.reason = "No challenge items — challengeCount was zero or not set";
-        return result;
+        throw std::invalid_argument("No challenge items — challengeCount was zero or not set");
     }
 
     const G2Point& pk = ext->userPublicParams->pk;
 
     // Guard: pk must not be at infinity
     if (pk.isInfinity()) {
-        result.ok = false;
-        result.reason = "Public key pk is at infinity — invalid user params";
-        return result;
+        throw std::invalid_argument("Public key pk is at infinity — invalid user params");
     }
 
     // ========== Step 1: Compute H = Σ(ν_j · H₁(fileId‖i_j)) ∈ G₁ ==========
@@ -269,9 +259,7 @@ CAMatrix::Audit::Messages::VerifyProofsResult DHTDynamicAuditStrategy::verifyPro
     }
 
     if (!hAccumulated) {
-        result.ok = false;
-        result.reason = "No valid challenge items for H computation";
-        return result;
+        throw std::runtime_error("No valid challenge items for H computation");
     }
 
     // ========== Step 2: Compute Θ^r ==========
@@ -279,9 +267,7 @@ CAMatrix::Audit::Messages::VerifyProofsResult DHTDynamicAuditStrategy::verifyPro
     const SM9CryptoData& r = challenges->r();
     auto thetaR = Theta ^ r;  // Θ^r ∈ GT
     if (!thetaR) {
-        result.ok = false;
-        result.reason = "Failed to compute Θ^r";
-        return result;
+        throw std::runtime_error("Failed to compute Θ^r");
     }
 
     // ========== Step 3: Compute Λ · e(H, R) ==========
@@ -291,17 +277,13 @@ CAMatrix::Audit::Messages::VerifyProofsResult DHTDynamicAuditStrategy::verifyPro
     // e(H, R) — pairing of aggregated hash with blind commitment
     SM9GTElement eHR;
     if (!eHR.pairing(H, R)) {
-        result.ok = false;
-        result.reason = "Failed to compute e(H, R)";
-        return result;
+        throw std::runtime_error("Failed to compute e(H, R)");
     }
 
     // Λ · e(H, R) — multiply in GT
     auto rhs = Lambda * eHR;
     if (!rhs) {
-        result.ok = false;
-        result.reason = "Failed to compute Λ · e(H, R)";
-        return result;
+        throw std::runtime_error("Failed to compute Λ · e(H, R)");
     }
 
     // ========== Step 4: Check Θ^r == Λ · e(H, R) ==========
